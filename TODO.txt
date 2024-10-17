@@ -1,0 +1,8 @@
+optimizations (use HashSets and intern type constraints)
+this is hard to do with diagnostics, but the groundwork is done
+that is, i will have to throw away graphviz debug output but error diagnostics will be kept
+
+(to do it, just change TypeCk::{pos,neg} to be OrderedSets, this will ensure most types stay compact-ish)
+
+for best performance, figure out how to ensure ConstraintGraph::constraints hashes ids semantically
+(maybe split ids into "shape id" and "type id", and use OrderedMap<ShapeId, TypeId>?)
