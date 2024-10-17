@@ -1,1 +1,1 @@
-main = ((x -> x) (x -> x)) 1;
+main = let x = y -> y; x x;
