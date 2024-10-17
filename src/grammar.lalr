@@ -1,0 +1,180 @@
+use super::ast::{self, Expr, Pattern};
+use super::Span;
+
+grammar(ctx: &mut crate::ParseCtx);
+
+Spanned<T>: (T, Span) = {
+    <l: @L> <val: T> <r: @R> => (val, ctx.span(l, r))
+};
+Spanned2<T, U>: (T, U, Span) = {
+    <l: @L> <val: T> <val2: U> <r: @R> => (val, val2, ctx.span(l, r))
+};
+Spanned3<T, U, V>: (T, U, V, Span) = {
+    <l: @L> <val: T> <val2: U> <val3: V> <r: @R> => (val, val2, val3, ctx.span(l, r))
+};
+
+Comment = "#.*";
+
+Ident: String = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
+IntLiteral: String = {
+    <r"-?(?:0|[1-9]\d*)"> => String::from(<>),
+    r"0\d" "Numbers can`t have leading zeros" => "0".to_string(),
+};
+FloatLiteral: String =
+    <r"-?(?:0|[1-9]\d*)\.\d*(?:[eE][+-]?\d+)?"> => String::from(<>);
+
+SepList<T, Sep>: Vec<T> = {
+    <v:(<T> Sep)*> <e:T> => {
+        let mut v = v;
+        v.push(e);
+        v
+    }
+};
+SepListOpt<T, Sep>: Vec<T> = {
+    SepList<T, Sep>,
+    => Vec::new(),
+};
+
+VarOrLit: Expr = {
+    Spanned<Ident> => match <>.0.as_str() {
+        "false" | "true" => ctx.expr_literal(ast::LiteralKind::Bool, <>.0, <>.1),
+        _ => ctx.expr_var(<>.0, <>.1)
+    },
+    Spanned<FloatLiteral> => ctx.expr_literal(ast::LiteralKind::Float, <>.0, <>.1),
+    Spanned<IntLiteral> => ctx.expr_literal(ast::LiteralKind::Int, <>.0, <>.1),
+};
+
+Term: Expr = {
+    VarOrLit,
+    "(" <Expr> ")",
+};
+
+Expr: Expr = {
+    // 0. basic term
+    #[precedence(level="0")]
+    <Term>,
+    // 1. call
+    #[precedence(level="1")] #[assoc(side="left")]
+    <Spanned2<Expr, Expr>> => {
+        ctx.binary(ast::BinOp::Call, <>.0, <>.1, <>.2)
+    },
+    // 2. unary ops
+    #[precedence(level="2")]
+    <l: @L> "!" <x:Expr> <r: @R> => {
+        ctx.unary(ast::UnOp::Not, x, (l, r))
+    },
+    // 3. pow
+    #[precedence(level="3")] #[assoc(side="right")]
+    <l: @L> <a:Expr> "**" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Pow, a, b, (l, r))
+    },
+    // 4. mul/div
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "*" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Mul, a, b, (l, r))
+    },
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "/" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Div, a, b, (l, r))
+    },
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "//" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::FloorDiv, a, b, (l, r))
+    },
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "%" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Rem, a, b, (l, r))
+    },
+    // 5. add/sub
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "+" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Add, a, b, (l, r))
+    },
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "-" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Sub, a, b, (l, r))
+    },
+    // 6. shl/shr
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "<<" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Shl, a, b, (l, r))
+    },
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l: @L> <a:Expr> ">>" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Shr, a, b, (l, r))
+    },
+    // 7. bit and
+    #[precedence(level="7")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "&" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::BitAnd, a, b, (l, r))
+    },
+    // 8. bit xor
+    #[precedence(level="8")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "^" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::BitXor, a, b, (l, r))
+    },
+    // 9. bit or
+    #[precedence(level="9")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "|" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::BitOr, a, b, (l, r))
+    },
+    // 10. cmp
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "==" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Eq, a, b, (l, r))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "!=" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Ne, a, b, (l, r))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "<" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Lt, a, b, (l, r))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> ">" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Gt, a, b, (l, r))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "<=" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Le, a, b, (l, r))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <l: @L> <a:Expr> ">=" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Ge, a, b, (l, r))
+    },
+    // 11. and
+    #[precedence(level="11")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "&&" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::And, a, b, (l, r))
+    },
+    // 12. or
+    #[precedence(level="12")] #[assoc(side="left")]
+    <l: @L> <a:Expr> "||" <b:Expr> <r: @R> => {
+        ctx.binary(ast::BinOp::Or, a, b, (l, r))
+    },
+    // 13. lambda
+    #[precedence(level="13")] #[assoc(side="right")]
+    <l: @L> <a:Pattern> "->" <b:Expr> <r: @R> => {
+        ctx.lambda(a, b, (l, r))
+    },
+    // 14. let
+    #[precedence(level="14")] #[assoc(side="right")]
+    <l: @L> "let" <a:Pattern> "=" <b:Expr> ";" <c:Expr> <r: @R> => {
+        ctx.letrec(a, b, c, (l, r))
+    },
+};
+
+Pattern: Pattern = {
+    <Spanned<Ident>> => ctx.pattern_var(<>.0, <>.1),
+};
+
+TopLevelDecl: ast::Tld = {
+    <l: @L> <pat:Pattern> "=" <body:Expr> ";" <r: @R> => {
+    	ctx.tld(pat, body, (l, r))
+    }
+};
+
+pub Script = {
+   <TopLevelDecl*>
+}
