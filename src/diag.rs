@@ -219,6 +219,7 @@ impl HumanType {
         let x: Vec<_> = pos
             .flat_map(|pos| match Self::from_pos2(ck, pos, rec) {
                 Self::Union(x) => x,
+                Self::Bot => vec![],
                 x => vec![x],
             })
             .collect();
@@ -236,6 +237,7 @@ impl HumanType {
         let x: Vec<_> = neg
             .flat_map(|neg| match Self::from_neg2(ck, neg, rec) {
                 Self::Intersection(x) => x,
+                Self::Top => vec![],
                 x => vec![x],
             })
             .collect();
@@ -247,6 +249,8 @@ impl HumanType {
     }
     fn inter2(a: Self, b: Self) -> Self {
         match (a, b) {
+            (Self::Top, a) => a,
+            (a, Self::Top) => a,
             (Self::Intersection(mut a), Self::Intersection(b)) => {
                 a.extend(b);
                 Self::Intersection(a)
@@ -264,6 +268,8 @@ impl HumanType {
     }
     fn union2(a: Self, b: Self) -> Self {
         match (a, b) {
+            (Self::Bot, a) => a,
+            (a, Self::Bot) => a,
             (Self::Union(mut a), Self::Union(b)) => {
                 a.extend(b);
                 Self::Union(a)
@@ -322,7 +328,7 @@ impl HumanType {
                 };
                 if new || true {
                     let u = Self::union(ck, ck.pos_var(*x), rec);
-                    Self::inter2(Self::Var(i), u)
+                    Self::union2(Self::Var(i), u)
                 } else {
                     Self::Var(i)
                 }
@@ -381,7 +387,7 @@ impl HumanType {
                 };
                 if new || true {
                     let u = Self::inter(ck, ck.neg_var(*x), rec);
-                    Self::union2(Self::Var(i), u)
+                    Self::inter2(Self::Var(i), u)
                 } else {
                     Self::Var(i)
                 }
@@ -398,79 +404,139 @@ impl HumanType {
         }
     }
     pub fn from_pos(ck: &TypeCk, pos: PosId) -> Self {
-        Self::from_pos2(ck, pos, &mut Default::default())
+        Self::from_pos2(ck, pos, &mut Default::default()).simplify(true)
     }
     pub fn from_neg(ck: &TypeCk, neg: NegId) -> Self {
-        Self::from_neg2(ck, neg, &mut Default::default())
+        Self::from_neg2(ck, neg, &mut Default::default()).simplify(false)
     }
-    fn count_var(&self, var: &TypeVar) -> u32 {
+    fn collect_vars(&self, out: &mut HashMap<TypeVar, usize>) {
         match self {
-            Self::Var(x) => (var == x).into(),
+            Self::Var(x) => *out.entry(*x).or_default() += 1,
             Self::Top
             | Self::Bot
             | Self::Void
             | Self::Bool
             | Self::Int { .. }
-            | Self::Float { .. } => 0,
-            Self::Record(x) => x.values().map(|x| x.count_var(var)).sum(),
-            Self::Func(a, b) => a.count_var(var) + b.count_var(var),
-            Self::Recursive(_a, b) => b.count_var(var),
-            Self::Union(x) | Self::Intersection(x) => x.iter().map(|x| x.count_var(var)).sum(),
+            | Self::Float { .. } => {}
+            Self::Record(x) => x.values().for_each(|x| x.collect_vars(out)),
+            Self::Func(a, b) => {
+                a.collect_vars(out);
+                b.collect_vars(out);
+            }
+            Self::Recursive(a, b) => {
+                *out.entry(*a).or_default() += 1;
+                b.collect_vars(out);
+            }
+            Self::Union(x) | Self::Intersection(x) => x.iter().for_each(|x| x.collect_vars(out)),
         }
     }
-    fn simplify_vec(
-        v: &[Self],
-        dont_touch: &mut Vec<Self>,
-        vis: &mut HashSet<TypeVar>,
-    ) -> Vec<Self> {
-        let count = |var: &TypeVar, dont_touch: &mut Vec<Self>| -> u32 {
-            dont_touch.iter().map(|x| x.count_var(var)).sum()
-        };
-        dont_touch.extend(v.iter().cloned());
-        let ret = v
-            .iter()
-            .filter_map(|x| match x {
-                HumanType::Var(x) if count(x, dont_touch) == 1 => None,
-                x => Some(x.simplify2(dont_touch, vis)),
-            })
-            .collect();
-        dont_touch.truncate(dont_touch.len() - v.len());
-        ret
-    }
-    fn simplify2(&self, dont_touch: &mut Vec<Self>, vis: &mut HashSet<TypeVar>) -> Self {
+    fn collect_annihilation_targets(&self, vars: &HashMap<TypeVar, usize>) -> Vec<TypeVar> {
         match self {
-            Self::Union(x) => {
-                let v = Self::simplify_vec(x, dont_touch, vis);
-                if v.len() == 1 {
-                    v.into_iter().next().unwrap()
+            Self::Var(x) => vec![*x],
+            Self::Intersection(x) | Self::Union(x) => x
+                .iter()
+                .filter_map(|x| if let Self::Var(x) = x { Some(*x) } else { None })
+                .filter(|var| *vars.get(var).unwrap() == 2)
+                .collect(),
+            _ => vec![],
+        }
+    }
+    fn annihilate_targets(&mut self, targets: &HashSet<TypeVar>, pos: bool) {
+        match self {
+            Self::Var(x) if targets.contains(x) => *self = if pos { Self::Bot } else { Self::Top },
+            Self::Intersection(x) | Self::Union(x) => {
+                x.retain(|x| {
+                    if let Self::Var(x) = x {
+                        !targets.contains(x)
+                    } else {
+                        true
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    fn annihilate_func(a: &mut Self, b: &mut Self, vars: &HashMap<TypeVar, usize>, pos: bool) {
+        let arg_direct_vars = a.collect_annihilation_targets(vars);
+        if arg_direct_vars.is_empty() {
+            return;
+        }
+        let ret_direct_vars = b.collect_annihilation_targets(vars);
+        if ret_direct_vars.is_empty() {
+            return;
+        }
+        let ret_direct_vars: HashSet<_> = ret_direct_vars.into_iter().collect();
+        let to_annihilate = arg_direct_vars
+            .into_iter()
+            .filter(|x| ret_direct_vars.contains(x))
+            .collect();
+        a.annihilate_targets(&to_annihilate, !pos);
+        b.annihilate_targets(&to_annihilate, pos);
+    }
+    fn direct_contains(&self, var: TypeVar) -> bool {
+        match self {
+            Self::Var(x) if *x == var => true,
+            Self::Union(x) | Self::Intersection(x) => x.iter().any(|x| x.direct_contains(var)),
+            _ => false,
+        }
+    }
+    fn simplify_vec(v: Vec<Self>, vars: &HashMap<TypeVar, usize>, pos: bool) -> Vec<Self> {
+        v.into_iter()
+            .flat_map(|x| match x.simplify2(vars, pos) {
+                Self::Top | Self::Bot => vec![],
+                Self::Intersection(x) => x,
+                Self::Union(x) => x,
+                x => vec![x],
+            })
+            .collect()
+    }
+    fn simplify2(self, vars: &HashMap<TypeVar, usize>, pos: bool) -> Self {
+        match self {
+            Self::Var(x) if *vars.get(&x).unwrap() <= 1 => {
+                if pos {
+                    Self::Bot
                 } else {
-                    Self::Union(v)
+                    Self::Top
+                }
+            }
+            Self::Union(x) => {
+                let v = Self::simplify_vec(x, vars, pos);
+                match v.len() {
+                    0 => Self::Bot,
+                    1 => v.into_iter().next().unwrap(),
+                    _ => Self::Union(v),
                 }
             }
             Self::Intersection(x) => {
-                let v = Self::simplify_vec(x, dont_touch, vis);
-                if v.len() == 1 {
-                    v.into_iter().next().unwrap()
-                } else {
-                    Self::Intersection(v)
+                let v = Self::simplify_vec(x, vars, pos);
+                match v.len() {
+                    0 => Self::Top,
+                    1 => v.into_iter().next().unwrap(),
+                    _ => Self::Intersection(v),
                 }
             }
             Self::Func(a, b) => {
-                let a = (**a).clone();
-                let b = (**b).clone();
-                dont_touch.push(b);
-                let a = a.simplify2(dont_touch, vis);
-                let b = dont_touch.pop().unwrap();
-                dont_touch.push(a);
-                let b = b.simplify2(dont_touch, vis);
-                let a = dont_touch.pop().unwrap();
+                let mut a = *a;
+                let mut b = *b;
+                Self::annihilate_func(&mut a, &mut b, vars, pos);
+                let a = a.simplify2(vars, !pos);
+                let b = b.simplify2(vars, pos);
                 Self::Func(Box::new(a), Box::new(b))
+            }
+            Self::Recursive(a, b) => {
+                let b = b.simplify2(vars, pos);
+                Self::Recursive(a, Box::new(b))
             }
             x => x.clone(),
         }
     }
-    pub fn simplify(&self) -> Self {
-        self.simplify2(&mut Vec::new(), &mut HashSet::new())
+    fn simplify(self, pos: bool) -> Self {
+        let mut vars = Default::default();
+        self.collect_vars(&mut vars);
+        println!("{vars:?}");
+        let ret = self.simplify2(&vars, pos);
+        println!("{ret}");
+        ret
     }
 }
 
