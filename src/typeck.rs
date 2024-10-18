@@ -162,8 +162,8 @@ impl TypeCk {
                     if s1 != s2 || b1 != b2 {
                         // coercion not implemented
                         return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id(), &mut Default::default()).simplify(),
-                            HumanType::from_neg(self, neg.id(), &mut Default::default()).simplify(),
+                            HumanType::from_pos(self, pos.id()).simplify(),
+                            HumanType::from_neg(self, neg.id()).simplify(),
                         )
                         .with_hint(diag::TypeHint::NoCoercion {
                             value: pos.span(),
@@ -176,8 +176,8 @@ impl TypeCk {
                     if b1 != b2 {
                         // coercion not implemented
                         return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id(), &mut Default::default()).simplify(),
-                            HumanType::from_neg(self, neg.id(), &mut Default::default()).simplify(),
+                            HumanType::from_pos(self, pos.id()).simplify(),
+                            HumanType::from_neg(self, neg.id()).simplify(),
                         )
                         .with_hint(diag::TypeHint::NoCoercion {
                             value: pos.span(),
@@ -202,8 +202,8 @@ impl TypeCk {
                 ) => {
                     if (s1 != s2 || b1 > b2) && (!s2 || *s1 || b1 >= b2) {
                         return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id(), &mut Default::default()).simplify(),
-                            HumanType::from_neg(self, neg.id(), &mut Default::default()).simplify(),
+                            HumanType::from_pos(self, pos.id()).simplify(),
+                            HumanType::from_neg(self, neg.id()).simplify(),
                         )
                         .with_hint(diag::TypeHint::NoCoercion {
                             value: pos.span(),
@@ -220,10 +220,8 @@ impl TypeCk {
                         } else {
                             // missing field
                             return Err(diag::TypeError::new(
-                                HumanType::from_pos(self, pos1.id(), &mut Default::default())
-                                    .simplify(),
-                                HumanType::from_neg(self, neg.id(), &mut Default::default())
-                                    .simplify(),
+                                HumanType::from_pos(self, pos1.id()).simplify(),
+                                HumanType::from_neg(self, neg.id()).simplify(),
                             )
                             .with_hint(diag::TypeHint::MissingField {
                                 field: k.clone(),
@@ -254,8 +252,8 @@ impl TypeCk {
                 }
                 (_, _) => {
                     return Err(diag::TypeError::new(
-                        HumanType::from_pos(self, pos.id(), &mut Default::default()).simplify(),
-                        HumanType::from_neg(self, neg.id(), &mut Default::default()).simplify(),
+                        HumanType::from_pos(self, pos.id()).simplify(),
+                        HumanType::from_neg(self, neg.id()).simplify(),
                     )
                     .with_hint(diag::TypeHint::NoCoercion {
                         value: pos.span(),
@@ -291,7 +289,7 @@ impl TypeCk {
             label.push('\n');
             label.push_str(&format!(
                 "{}",
-                HumanType::from_pos(self, PosId(i), &mut Default::default()).simplify()
+                HumanType::from_pos(self, PosId(i)).simplify()
             ));
             label.push('\n');
             label.push_str(self.pos_spans[i].text(src));
@@ -307,7 +305,7 @@ impl TypeCk {
             label.push('\n');
             label.push_str(&format!(
                 "{}",
-                HumanType::from_neg(self, NegId(i), &mut Default::default()).simplify()
+                HumanType::from_neg(self, NegId(i)).simplify()
             ));
             label.push('\n');
             label.push_str(self.neg_spans[i].text(src));
