@@ -17,13 +17,14 @@ mod util;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Span {
+    file: u8,
     left: usize,
     right: usize,
 }
 
 impl Span {
-    pub fn new(left: usize, right: usize) -> Self {
-        Self { left, right }
+    pub fn new(file: u8, left: usize, right: usize) -> Self {
+        Self { file, left, right }
     }
     pub fn text<'a>(&self, src: &'a str) -> &'a str {
         &src[self.left..self.right]
@@ -31,7 +32,9 @@ impl Span {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub struct ParseCtx {}
+pub struct ParseCtx {
+    file: u8,
+}
 
 // construct using context methods instead of directly for easier refactoring
 impl ParseCtx {
@@ -145,21 +148,35 @@ impl<T> Construct<Box<T>> for T {
     }
 }
 impl Construct<Span> for (usize, usize) {
-    fn construct(self, _ctx: &mut ParseCtx) -> Span {
+    fn construct(self, ctx: &mut ParseCtx) -> Span {
         Span {
+            file: ctx.file,
             left: self.0,
             right: self.1,
         }
     }
 }
 
+fn show_err(_filename: &str, code: &str, err: diag::Error) {
+    let cache = (0u8, ariadne::Source::from(code));
+    err.to_ariadne(ariadne::Report::build(ariadne::ReportKind::Error, 0, 0))
+        .eprint(cache)
+        .unwrap();
+}
+
 fn main() {
     let parser = grammar::ScriptParser::default();
-    let input_file = std::env::args().nth(1).unwrap();
-    let text = std::fs::read_to_string(input_file).unwrap();
-    let ast = parser.parse(&mut ParseCtx {}, &text).unwrap();
+    let input_file = std::env::args().nth(1).expect("expected filename");
+    let text = std::fs::read_to_string(&input_file).expect("unable to read file");
+    let ast = parser.parse(&mut ParseCtx { file: 0 }, &text).unwrap();
     let mut ctx = hir::Ctx::default();
-    let (bindings, scope) = ctx.lower_ast(ast).unwrap();
+    let (bindings, scope) = match ctx.lower_ast(ast) {
+        Ok(x) => x,
+        Err(err) => {
+            show_err(&input_file, &text, err);
+            std::process::exit(1);
+        }
+    };
     // println!("{:#?}", scope);
     let graph = ctx.ck.graphviz(&text);
     std::fs::write("types.dot", graph).unwrap();

@@ -575,3 +575,66 @@ pub enum Error {
     #[error("error: {0}")]
     Other(String, Span),
 }
+
+impl ariadne::Span for crate::Span {
+    type SourceId = u8;
+    fn source(&self) -> &Self::SourceId {
+        &self.file
+    }
+    fn start(&self) -> usize {
+        self.left
+    }
+    fn end(&self) -> usize {
+        self.right
+    }
+}
+
+impl Error {
+    pub fn to_ariadne<'a>(
+        &self,
+        ariadne: ariadne::ReportBuilder<'a, crate::Span>,
+    ) -> ariadne::Report<'a, crate::Span> {
+        match self {
+            Self::Type(TypeError {
+                expected,
+                found,
+                hints,
+            }) => {
+                let mut ariadne = ariadne.with_message("type mismatch");
+                for hint in &hints.0 {
+                    match hint {
+                        TypeHint::NoCoercion { value, used } => {
+                            ariadne = ariadne.with_label(
+                                ariadne::Label::new(*value)
+                                    .with_message(format!(
+                                        "expected this to be usable as `{expected}`"
+                                    ))
+                                    .with_order(-1),
+                            );
+                            ariadne = ariadne.with_label(
+                                ariadne::Label::new(*used)
+                                    .with_message(format!("found value of type `{found}`")),
+                            );
+                        }
+                        TypeHint::MissingField { field, used } => {
+                            ariadne = ariadne.with_label(
+                                ariadne::Label::new(*used)
+                                    .with_message(format!("field `{field}` may be missing")),
+                            );
+                        }
+                    }
+                }
+                ariadne
+            }
+            Self::NameNotFound(NameNotFoundError { span, name }) => {
+                ariadne.with_message("name not found").with_label(
+                    ariadne::Label::new(*span).with_message(format!("name `{name}` not found")),
+                )
+            }
+            Self::Other(error, span) => ariadne
+                .with_message("unknown error")
+                .with_label(ariadne::Label::new(*span).with_message(error)),
+        }
+        .finish()
+    }
+}
