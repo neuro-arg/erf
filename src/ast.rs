@@ -46,18 +46,20 @@ pub enum ExprInner {
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Lambda(Pattern, Box<Expr>),
-    LetRec(Pattern, Box<Expr>, Box<Expr>),
+    LetRec(Vec<(LetPattern, Box<Expr>)>, Box<Expr>),
 }
+
+pub type LetArm = (LetPattern, Expr);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tld {
-    pub pattern: Pattern,
+    pub pattern: LetPattern,
     pub body: Expr,
     pub span: Span,
 }
 
 impl Tld {
-    pub fn new(pattern: Pattern, body: Expr, span: Span) -> Tld {
+    pub fn new(pattern: LetPattern, body: Expr, span: Span) -> Tld {
         Self {
             pattern,
             body,
@@ -82,12 +84,11 @@ impl ExprInner {
     pub fn lambda(lhs: impl Into<Pattern>, rhs: impl Into<Box<Expr>>) -> Self {
         Self::Lambda(lhs.into(), rhs.into())
     }
-    pub fn letrec(
-        target: impl Into<Pattern>,
-        expr: impl Into<Box<Expr>>,
-        body: impl Into<Box<Expr>>,
-    ) -> Self {
-        Self::LetRec(target.into(), expr.into(), body.into())
+    pub fn letrec(target: impl IntoIterator<Item = LetArm>, body: impl Into<Box<Expr>>) -> Self {
+        Self::LetRec(
+            target.into_iter().map(|(a, b)| (a, Box::new(b))).collect(),
+            body.into(),
+        )
     }
 }
 
@@ -126,11 +127,36 @@ impl Pattern {
     }
 }
 
-impl Pattern {
+impl PatternInner {
     pub fn label(&self) -> Option<String> {
-        match &self.inner {
+        match self {
             PatternInner::Variable(x) => Some(x.clone()),
         }
+    }
+}
+
+impl Pattern {
+    pub fn label(&self) -> Option<String> {
+        self.inner.label()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LetPattern {
+    pub ident: String,
+    // pub arg_patterns: Vec<Pattern>,
+    pub span: Span,
+}
+
+impl LetPattern {
+    pub fn new(ident: String, span: Span) -> Self {
+        Self { ident, span }
+    }
+}
+
+impl LetPattern {
+    pub fn label(&self) -> String {
+        self.ident.clone()
     }
 }
 

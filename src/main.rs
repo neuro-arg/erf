@@ -2,7 +2,7 @@
 #![allow(clippy::overly_complex_bool_expr)]
 #![allow(dead_code)]
 
-use ast::{Expr, ExprInner, Ident, LiteralKind, Pattern, PatternInner, Tld};
+use ast::{Expr, ExprInner, Ident, LiteralKind, Tld};
 
 mod ast;
 mod diag;
@@ -58,13 +58,20 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn let_pattern_var(
+        &mut self,
+        content: impl Construct<Ident>,
+        span: impl Construct<Span>,
+    ) -> ast::LetPattern {
+        ast::LetPattern::new(content.construct(self), span.construct(self))
+    }
     pub fn pattern_var(
         &mut self,
         content: impl Construct<Ident>,
         span: impl Construct<Span>,
-    ) -> Pattern {
-        Pattern::new(
-            PatternInner::var(content.construct(self)),
+    ) -> ast::Pattern {
+        ast::Pattern::new(
+            ast::PatternInner::Variable(content.construct(self)),
             span.construct(self),
         )
     }
@@ -102,25 +109,27 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn let_arm(
+        &mut self,
+        pat: impl Construct<ast::LetPattern>,
+        expr: impl Construct<Expr>,
+    ) -> ast::LetArm {
+        (pat.construct(self), expr.construct(self))
+    }
     pub fn letrec(
         &mut self,
-        pattern: impl Construct<ast::Pattern>,
-        expr1: impl Construct<Box<ast::Expr>>,
-        expr2: impl Construct<Box<ast::Expr>>,
+        arms: impl Construct<Vec<ast::LetArm>>,
+        body: impl Construct<Box<ast::Expr>>,
         span: impl Construct<Span>,
     ) -> Expr {
         Expr::new(
-            ExprInner::letrec(
-                pattern.construct(self),
-                expr1.construct(self),
-                expr2.construct(self),
-            ),
+            ExprInner::letrec(arms.construct(self), body.construct(self)),
             span.construct(self),
         )
     }
     pub fn tld(
         &mut self,
-        pattern: impl Construct<ast::Pattern>,
+        pattern: impl Construct<ast::LetPattern>,
         expr1: impl Construct<ast::Expr>,
         span: impl Construct<Span>,
     ) -> Tld {
