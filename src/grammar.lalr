@@ -1,4 +1,4 @@
-use super::ast::{self, Expr, Pattern};
+use super::ast::{self, Expr, LetArm, LetPattern, Pattern};
 
 grammar(ctx: &mut crate::ParseCtx);
 
@@ -136,9 +136,19 @@ Expr: Expr = {
     },
     // 14. let
     #[precedence(level="14")] #[assoc(side="right")]
-    <l: @L> "let" Comment* <a:Pattern> "=" Comment* <b:Expr> ";" Comment* <c:Expr> <r: @R> => {
-        ctx.letrec(a, b, c, (l, r))
+    <l: @L> "let" Comment* <arms:LetBindingArm+> "in" Comment* <body:Expr> <r: @R> => {
+        ctx.letrec(arms, body, (l, r))
     },
+};
+
+LetBindingArm: LetArm = {
+    <p:LetPattern> "=" Comment* <b:Expr> ";" Comment* => {
+    	ctx.let_arm(p, b)
+    }
+};
+
+LetPattern: LetPattern = {
+    <l: @L> <x:Ident> <r: @R> => ctx.let_pattern_var(x, (l, r)),
 };
 
 Pattern: Pattern = {
@@ -146,7 +156,7 @@ Pattern: Pattern = {
 };
 
 TopLevelDecl: ast::Tld = {
-    <l: @L> <pat:Pattern> "=" Comment* <body:Expr> ";" <r: @R> Comment* => {
+    <l: @L> <pat:LetPattern> "=" Comment* <body:Expr> ";" <r: @R> Comment* => {
     	ctx.tld(pat, body, (l, r))
     }
 };

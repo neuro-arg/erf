@@ -6,7 +6,8 @@ use std::{collections::HashMap, str::FromStr};
 use malachite::num::logic::traits::SignificantBits;
 
 use crate::{
-    ast, diag,
+    ast::{self, LetPattern},
+    diag,
     typeck::{Neg, Pos, PosIdS, TypeCk, VarId},
     util::OrderedMap,
 };
@@ -67,9 +68,15 @@ pub struct Term {
     pub ty: PosIdS,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Bindings {
     ck_map: HashMap<String, Vec<VarId>>,
+}
+
+#[derive(Clone, Debug)]
+struct Binding {
+    var: VarId,
+    term: Term,
 }
 
 impl Bindings {
@@ -98,6 +105,18 @@ impl Bindings {
         }
         (ret1, to_pop)
     }
+    fn insert_pattern_let(&mut self, arms: Vec<(VarId, PosIdS, LetPattern)>) -> Vec<String> {
+        let mut to_pop = Vec::new();
+        // FIXME: toposort this NOW!
+        // and, in fact, only allow cycles between functions
+        // (if two values need each other or a value and a function need each other that can't
+        // easily be lowered and more likely than not is broken)
+        for (var, _var_out, pat) in arms {
+            to_pop.push(pat.label());
+            self.insert_ck(pat.label(), var);
+        }
+        to_pop
+    }
     /// Execute `func` in a new scope.
     ///
     /// # Parameters
@@ -118,6 +137,18 @@ impl Bindings {
     ) -> T {
         let (vars, to_pop) = self.insert_pattern(pat, var, var_out);
         let ret = func(self, vars);
+        for name in to_pop {
+            self.remove_ck(&name);
+        }
+        ret
+    }
+    fn new_scope_let<T>(
+        &mut self,
+        arms: Vec<(VarId, PosIdS, LetPattern)>,
+        func: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let to_pop = self.insert_pattern_let(arms);
+        let ret = func(self);
         for name in to_pop {
             self.remove_ck(&name);
         }
@@ -153,20 +184,32 @@ impl Ctx {
         expr: ast::Expr,
     ) -> Result<Term, diag::Error> {
         match expr.inner {
-            ast::ExprInner::LetRec(pat, expr1, expr2) => {
-                // first, allocate the variable that is to be assigned <expr1>
-                let var = self.ck.add_var(pat.label());
-                // its span is to be the pattern's span
-                let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
+            ast::ExprInner::LetRec(arms, body) => {
+                let mut var_cache = HashMap::new();
+                let (pats, exprs) = arms
+                    .into_iter()
+                    .map(|(pat, expr)| {
+                        // first, allocate the variable that is to be assigned <expr1>
+                        let var = *var_cache
+                            .entry(pat.label())
+                            .or_insert_with(|| self.ck.add_var(Some(pat.label())));
+                        // its span is to be the pattern's span
+                        let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
+                        ((var, var_out, pat), (var, var_inp, expr))
+                    })
+                    .collect::<(Vec<_>, Vec<_>)>();
                 // now create a new scope with that var and lower the expr in that scope
-                bindings.new_scope(pat, var, var_out, |bindings, mut vars| {
-                    let expr1 = self.lower_expr(bindings, *expr1)?;
-                    // now direct expr1 to var_inp (assignment)
-                    self.ck.flow(expr1.ty, var_inp)?;
-                    // and actually bind this variable
-                    vars.insert(0, (var, expr1));
+                bindings.new_scope_let(pats, |bindings| {
+                    let mut vars = Vec::new();
+                    for (var, var_inp, expr1) in exprs {
+                        let expr1 = self.lower_expr(bindings, *expr1)?;
+                        // now direct expr1 to var_inp (assignment)
+                        self.ck.flow(expr1.ty, var_inp)?;
+                        // and actually bind this variable
+                        vars.push((var, expr1));
+                    }
                     // finally, lower expr2 in the new scope
-                    let expr = self.lower_expr(bindings, *expr2)?;
+                    let expr = self.lower_expr(bindings, *body)?;
                     Ok(Term {
                         ty: expr.ty,
                         inner: TermInner::Bind {
@@ -294,26 +337,54 @@ impl Ctx {
     }
 
     pub fn lower_ast(&mut self, ast: ast::Program) -> Result<(Bindings, Scope), diag::Error> {
-        let mut ret0 = Bindings::default();
+        let mut bindings = Bindings::default();
         let mut ret1 = Scope::default();
-        let mut tmp = Vec::new();
-        for ast::Tld {
+        let mut var_cache = HashMap::new();
+        let (pats, exprs) = ast
+            .into_iter()
+            .map(
+                |ast::Tld {
+                     pattern: pat,
+                     body: expr,
+                     span: _,
+                 }| {
+                    // first, allocate the variable that is to be assigned <expr1>
+                    let var = *var_cache
+                        .entry(pat.label())
+                        .or_insert_with(|| self.ck.add_var(Some(pat.label())));
+                    // its span is to be the pattern's span
+                    let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
+                    ((var, var_out, pat), (var, var_inp, expr))
+                },
+            )
+            .collect::<(Vec<_>, Vec<_>)>();
+        // now create a new scope with that var and lower the expr in that scope
+        let _ = bindings.insert_pattern_let(pats);
+        for (var, var_inp, expr1) in exprs {
+            let expr1 = self.lower_expr(&mut bindings, expr1)?;
+            // now direct expr1 to var_inp (assignment)
+            self.ck.flow(expr1.ty, var_inp)?;
+            // and actually bind this variable
+            ret1.insert(var, expr1);
+            // vars.0.push((var, expr1));
+        }
+        /*for ast::Tld {
             pattern,
             body,
             span: _,
         } in ast
         {
-            let var = self.ck.add_var(pattern.label());
+            let var = self.ck.add_var(Some(pattern.label());
             let (var_out, var_inp) = var.polarize(&mut self.ck, pattern.span);
-            let (vars, _) = ret0.insert_pattern(pattern, var, var_out);
+            let (vars, _) = bindings.insert_pattern_let(pattern, var, var_out);
             tmp.push((body, var, var_inp, vars));
         }
         for (body, var, var_inp, vars) in tmp {
-            let body = self.lower_expr(&mut ret0, body)?;
+            let body = self.lower_expr(&mut bindings, body)?;
             self.ck.flow(body.ty, var_inp)?;
             ret1.insert(var, body);
             ret1.extend(vars);
-        }
-        Ok((ret0, ret1))
+        }*/
+        Ok((bindings, ret1))
     }
 }
