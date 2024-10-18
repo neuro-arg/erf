@@ -533,10 +533,7 @@ impl HumanType {
     fn simplify(self, pos: bool) -> Self {
         let mut vars = Default::default();
         self.collect_vars(&mut vars);
-        println!("{vars:?}");
-        let ret = self.simplify2(&vars, pos);
-        println!("{ret}");
-        ret
+        self.simplify2(&vars, pos)
     }
 }
 

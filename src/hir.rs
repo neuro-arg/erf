@@ -208,8 +208,8 @@ impl Ctx {
                 })
             }
             ast::ExprInner::BinOp(op, a, b) => {
+                let func_span = a.span;
                 let func = self.lower_expr(bindings, *a)?;
-                let arg_span = b.span;
                 let arg = self.lower_expr(bindings, *b)?;
                 match op {
                     ast::BinOp::Call => {
@@ -218,8 +218,8 @@ impl Ctx {
                         // ret's span is just the entire expr
                         let (ret_out, ret_inp) = ret.polarize(&mut self.ck, expr.span);
                         let func_inp = Neg::Func(arg.ty, ret_inp);
-                        // the input's span is just the arg's span
-                        let func_inp = self.ck.add_neg(func_inp, arg_span);
+                        // the func's span is, well, the func's span
+                        let func_inp = self.ck.add_neg(func_inp, func_span);
                         self.ck.flow(func.ty, func_inp)?;
                         Ok(Term {
                             inner: TermInner::Application(Box::new(func), Box::new(arg)),
