@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::{self, Display, Write},
 };
 
@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::{
     typeck::{Neg, NegId, Pos, PosId, TypeCk, VarId},
-    util::OrderedSet,
     Span,
 };
 
@@ -188,10 +187,37 @@ impl Display for TypeError {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum AnyId {
+    Pos(PosId),
+    Neg(NegId),
+    Var(VarId),
+}
+
+impl From<PosId> for AnyId {
+    fn from(value: PosId) -> Self {
+        Self::Pos(value)
+    }
+}
+impl From<NegId> for AnyId {
+    fn from(value: NegId) -> Self {
+        Self::Neg(value)
+    }
+}
+impl From<VarId> for AnyId {
+    fn from(value: VarId) -> Self {
+        Self::Var(value)
+    }
+}
+
 impl HumanType {
-    fn union(ck: &TypeCk, pos: impl Iterator<Item = PosId>, vars: &mut OrderedSet<VarId>) -> Self {
+    fn union(
+        ck: &TypeCk,
+        pos: impl Iterator<Item = PosId>,
+        rec: &mut (HashMap<AnyId, Option<TypeVar>>, usize),
+    ) -> Self {
         let x: Vec<_> = pos
-            .flat_map(|pos| match Self::from_pos(ck, pos, vars) {
+            .flat_map(|pos| match Self::from_pos2(ck, pos, rec) {
                 Self::Union(x) => x,
                 x => vec![x],
             })
@@ -202,9 +228,13 @@ impl HumanType {
             _ => Self::Union(x),
         }
     }
-    fn inter(ck: &TypeCk, neg: impl Iterator<Item = NegId>, vars: &mut OrderedSet<VarId>) -> Self {
+    fn inter(
+        ck: &TypeCk,
+        neg: impl Iterator<Item = NegId>,
+        rec: &mut (HashMap<AnyId, Option<TypeVar>>, usize),
+    ) -> Self {
         let x: Vec<_> = neg
-            .flat_map(|neg| match Self::from_neg(ck, neg, vars) {
+            .flat_map(|neg| match Self::from_neg2(ck, neg, rec) {
                 Self::Intersection(x) => x,
                 x => vec![x],
             })
@@ -249,8 +279,20 @@ impl HumanType {
             (a, b) => Self::Union(vec![a, b]),
         }
     }
-    pub fn from_pos(ck: &TypeCk, pos: PosId, vars: &mut OrderedSet<VarId>) -> Self {
-        match ck.pos(pos) {
+    fn from_pos2(
+        ck: &TypeCk,
+        pos: PosId,
+        rec: &mut (HashMap<AnyId, Option<TypeVar>>, usize),
+    ) -> Self {
+        if let Some(ret) = rec.0.get_mut(&pos.into()) {
+            return Self::Var(ret.unwrap_or_else(|| {
+                *ret = Some(TypeVar(rec.1));
+                rec.1 += 1;
+                TypeVar(rec.1 - 1)
+            }));
+        }
+        rec.0.insert(pos.into(), None);
+        let ret = match ck.pos(pos) {
             Pos::Void => Self::Void,
             Pos::Bool => Self::Bool,
             Pos::Int { signed, bits } => Self::Int {
@@ -265,26 +307,51 @@ impl HumanType {
             Pos::FloatLiteral => Self::Float { bits: None },
             Pos::Record(x) => Self::Record(
                 x.iter()
-                    .map(|(k, v)| (k.clone(), Self::from_pos(ck, v.id(), vars)))
+                    .map(|(k, v)| (k.clone(), Self::from_pos2(ck, v.id(), rec)))
                     .collect(),
             ),
             Pos::Var(x) => {
-                let (new, i) = vars.insert(*x);
-                if new {
-                    let u = Self::union(ck, ck.pos_var(*x), vars);
-                    Self::inter2(Self::Var(TypeVar(i)), u)
+                let i = rec.0.entry((*x).into()).or_default();
+                let (new, i) = match i {
+                    Some(i) => (false, *i),
+                    None => {
+                        *i = Some(TypeVar(rec.1));
+                        rec.1 += 1;
+                        (true, TypeVar(rec.1 - 1))
+                    }
+                };
+                if new || true {
+                    let u = Self::union(ck, ck.pos_var(*x), rec);
+                    Self::inter2(Self::Var(i), u)
                 } else {
-                    Self::Var(TypeVar(i))
+                    Self::Var(i)
                 }
             }
             Pos::Func(a, b) => Self::Func(
-                Box::new(Self::from_neg(ck, a.id(), vars)),
-                Box::new(Self::from_pos(ck, b.id(), vars)),
+                Box::new(Self::from_neg2(ck, a.id(), rec)),
+                Box::new(Self::from_pos2(ck, b.id(), rec)),
             ),
+        };
+        if let Some(var) = rec.0.get(&pos.into()).unwrap() {
+            HumanType::Recursive(*var, Box::new(ret))
+        } else {
+            ret
         }
     }
-    pub fn from_neg(ck: &TypeCk, neg: NegId, vars: &mut OrderedSet<VarId>) -> Self {
-        match ck.neg(neg) {
+    fn from_neg2(
+        ck: &TypeCk,
+        neg: NegId,
+        rec: &mut (HashMap<AnyId, Option<TypeVar>>, usize),
+    ) -> Self {
+        if let Some(ret) = rec.0.get_mut(&neg.into()) {
+            return Self::Var(ret.unwrap_or_else(|| {
+                *ret = Some(TypeVar(rec.1));
+                rec.1 += 1;
+                TypeVar(rec.1 - 1)
+            }));
+        }
+        rec.0.insert(neg.into(), None);
+        let ret = match ck.neg(neg) {
             Neg::Void => Self::Void,
             Neg::Bool => Self::Bool,
             Neg::Int { signed, bits } => Self::Int {
@@ -299,23 +366,42 @@ impl HumanType {
             Neg::ArbitraryFloat => Self::Float { bits: None },
             Neg::Record(x) => Self::Record(
                 x.iter()
-                    .map(|(k, v)| (k.clone(), Self::from_neg(ck, v.id(), vars)))
+                    .map(|(k, v)| (k.clone(), Self::from_neg2(ck, v.id(), rec)))
                     .collect(),
             ),
             Neg::Var(x) => {
-                let (new, i) = vars.insert(*x);
-                if new {
-                    let u = Self::inter(ck, ck.neg_var(*x), vars);
-                    Self::union2(Self::Var(TypeVar(i)), u)
+                let i = rec.0.entry((*x).into()).or_default();
+                let (new, i) = match i {
+                    Some(i) => (false, *i),
+                    None => {
+                        *i = Some(TypeVar(rec.1));
+                        rec.1 += 1;
+                        (true, TypeVar(rec.1 - 1))
+                    }
+                };
+                if new || true {
+                    let u = Self::inter(ck, ck.neg_var(*x), rec);
+                    Self::union2(Self::Var(i), u)
                 } else {
-                    Self::Var(TypeVar(i))
+                    Self::Var(i)
                 }
             }
             Neg::Func(a, b) => Self::Func(
-                Box::new(Self::from_pos(ck, a.id(), vars)),
-                Box::new(Self::from_neg(ck, b.id(), vars)),
+                Box::new(Self::from_pos2(ck, a.id(), rec)),
+                Box::new(Self::from_neg2(ck, b.id(), rec)),
             ),
+        };
+        if let Some(var) = rec.0.get(&neg.into()).unwrap() {
+            HumanType::Recursive(*var, Box::new(ret))
+        } else {
+            ret
         }
+    }
+    pub fn from_pos(ck: &TypeCk, pos: PosId) -> Self {
+        Self::from_pos2(ck, pos, &mut Default::default())
+    }
+    pub fn from_neg(ck: &TypeCk, neg: NegId) -> Self {
+        Self::from_neg2(ck, neg, &mut Default::default())
     }
     fn count_var(&self, var: &TypeVar) -> u32 {
         match self {
@@ -332,7 +418,11 @@ impl HumanType {
             Self::Union(x) | Self::Intersection(x) => x.iter().map(|x| x.count_var(var)).sum(),
         }
     }
-    fn simplify_vec(v: &[Self], dont_touch: &mut Vec<Self>) -> Vec<Self> {
+    fn simplify_vec(
+        v: &[Self],
+        dont_touch: &mut Vec<Self>,
+        vis: &mut HashSet<TypeVar>,
+    ) -> Vec<Self> {
         let count = |var: &TypeVar, dont_touch: &mut Vec<Self>| -> u32 {
             dont_touch.iter().map(|x| x.count_var(var)).sum()
         };
@@ -341,16 +431,16 @@ impl HumanType {
             .iter()
             .filter_map(|x| match x {
                 HumanType::Var(x) if count(x, dont_touch) == 1 => None,
-                x => Some(x.simplify2(dont_touch)),
+                x => Some(x.simplify2(dont_touch, vis)),
             })
             .collect();
         dont_touch.truncate(dont_touch.len() - v.len());
         ret
     }
-    fn simplify2(&self, dont_touch: &mut Vec<Self>) -> Self {
+    fn simplify2(&self, dont_touch: &mut Vec<Self>, vis: &mut HashSet<TypeVar>) -> Self {
         match self {
             Self::Union(x) => {
-                let v = Self::simplify_vec(x, dont_touch);
+                let v = Self::simplify_vec(x, dont_touch, vis);
                 if v.len() == 1 {
                     v.into_iter().next().unwrap()
                 } else {
@@ -358,7 +448,7 @@ impl HumanType {
                 }
             }
             Self::Intersection(x) => {
-                let v = Self::simplify_vec(x, dont_touch);
+                let v = Self::simplify_vec(x, dont_touch, vis);
                 if v.len() == 1 {
                     v.into_iter().next().unwrap()
                 } else {
@@ -369,10 +459,10 @@ impl HumanType {
                 let a = (**a).clone();
                 let b = (**b).clone();
                 dont_touch.push(b);
-                let a = a.simplify2(dont_touch);
+                let a = a.simplify2(dont_touch, vis);
                 let b = dont_touch.pop().unwrap();
                 dont_touch.push(a);
-                let b = b.simplify2(dont_touch);
+                let b = b.simplify2(dont_touch, vis);
                 let a = dont_touch.pop().unwrap();
                 Self::Func(Box::new(a), Box::new(b))
             }
@@ -380,7 +470,7 @@ impl HumanType {
         }
     }
     pub fn simplify(&self) -> Self {
-        self.simplify2(&mut Vec::new())
+        self.simplify2(&mut Vec::new(), &mut HashSet::new())
     }
 }
 
