@@ -560,6 +560,8 @@ impl fmt::Display for NameNotFoundError {
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("parse error")]
+    Lalrpop(u8, lalrpop_util::ParseError<usize, (usize, String), String>),
     #[error("type error: {0}")]
     Type(
         #[source]
@@ -640,6 +642,36 @@ impl Error {
             Self::Other(error, span) => ariadne
                 .with_message("unknown error")
                 .with_label(ariadne::Label::new(resolve(span)).with_message(error)),
+            Self::Lalrpop(file, error) => {
+                let ariadne = ariadne.with_message("parse error");
+                let resolve = |a: &usize, b: &usize| resolve(&Span::new(*file, *a, *b));
+                match error {
+                    lalrpop_util::ParseError::User { error } => ariadne.with_message(error),
+                    lalrpop_util::ParseError::ExtraToken { token: (a, tok, b) } => ariadne
+                        .with_label(
+                            ariadne::Label::new(resolve(a, b))
+                                .with_message(format!("unexpected token: `{}`", tok.1)),
+                        ),
+                    lalrpop_util::ParseError::InvalidToken { location } => ariadne.with_label(
+                        ariadne::Label::new(resolve(location, &(location + 1)))
+                            .with_message("invalid token"),
+                    ),
+                    lalrpop_util::ParseError::UnrecognizedEof {
+                        location,
+                        expected: _,
+                    } => ariadne.with_label(
+                        ariadne::Label::new(resolve(location, location))
+                            .with_message("unexpected end of file"),
+                    ),
+                    lalrpop_util::ParseError::UnrecognizedToken {
+                        token: (a, tok, b),
+                        expected: _,
+                    } => ariadne.with_label(
+                        ariadne::Label::new(resolve(a, b))
+                            .with_message(format!("unexpected token: `{}`", tok.1)),
+                    ),
+                }
+            }
         }
         .finish()
     }

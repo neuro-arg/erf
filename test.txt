@@ -1,1 +1,2 @@
-main = let x = y -> y; x x;
+# test
+main = (x => 5) (y => y) (z => z);
