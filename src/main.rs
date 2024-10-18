@@ -171,7 +171,21 @@ fn main() {
     let parser = grammar::ScriptParser::default();
     let input_file = std::env::args().nth(1).expect("expected filename");
     let text = std::fs::read_to_string(&input_file).expect("unable to read file");
-    let ast = parser.parse(&mut ParseCtx { file: 0 }, &text).unwrap();
+    let ast = match parser
+        .parse(&mut ParseCtx { file: 0 }, &text)
+        .map_err(|err| {
+            diag::Error::Lalrpop(
+                0,
+                err.map_token(|lalrpop_util::lexer::Token(n, s)| (n, s.to_owned()))
+                    .map_error(|s| s.to_owned()),
+            )
+        }) {
+        Ok(x) => x,
+        Err(err) => {
+            show_err(&input_file, &text, err);
+            std::process::exit(1);
+        }
+    };
     let mut ctx = hir::Ctx::default();
     let (bindings, scope) = match ctx.lower_ast(ast) {
         Ok(x) => x,
