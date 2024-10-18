@@ -576,24 +576,29 @@ pub enum Error {
     Other(String, Span),
 }
 
-impl ariadne::Span for crate::Span {
-    type SourceId = u8;
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedSpan<'a>(&'a str, crate::Span);
+impl<'a> ariadne::Span for ResolvedSpan<'a> {
+    type SourceId = &'a str;
     fn source(&self) -> &Self::SourceId {
-        &self.file
+        &self.0
     }
     fn start(&self) -> usize {
-        self.left
+        self.1.left
     }
     fn end(&self) -> usize {
-        self.right
+        self.1.right
     }
 }
 
 impl Error {
     pub fn to_ariadne<'a>(
         &self,
-        ariadne: ariadne::ReportBuilder<'a, crate::Span>,
-    ) -> ariadne::Report<'a, crate::Span> {
+        span_table: &'a [impl AsRef<str>],
+        ariadne: ariadne::ReportBuilder<'a, ResolvedSpan<'a>>,
+    ) -> ariadne::Report<'a, ResolvedSpan<'a>> {
+        let resolve =
+            |span: &crate::Span| ResolvedSpan(span_table[span.file as usize].as_ref(), *span);
         match self {
             Self::Type(TypeError {
                 expected,
@@ -605,20 +610,20 @@ impl Error {
                     match hint {
                         TypeHint::NoCoercion { value, used } => {
                             ariadne = ariadne.with_label(
-                                ariadne::Label::new(*value)
+                                ariadne::Label::new(resolve(value))
                                     .with_message(format!(
                                         "expected this to be usable as `{expected}`"
                                     ))
                                     .with_order(-1),
                             );
                             ariadne = ariadne.with_label(
-                                ariadne::Label::new(*used)
+                                ariadne::Label::new(resolve(used))
                                     .with_message(format!("found value of type `{found}`")),
                             );
                         }
                         TypeHint::MissingField { field, used } => {
                             ariadne = ariadne.with_label(
-                                ariadne::Label::new(*used)
+                                ariadne::Label::new(resolve(used))
                                     .with_message(format!("field `{field}` may be missing")),
                             );
                         }
@@ -628,12 +633,13 @@ impl Error {
             }
             Self::NameNotFound(NameNotFoundError { span, name }) => {
                 ariadne.with_message("name not found").with_label(
-                    ariadne::Label::new(*span).with_message(format!("name `{name}` not found")),
+                    ariadne::Label::new(resolve(span))
+                        .with_message(format!("name `{name}` not found")),
                 )
             }
             Self::Other(error, span) => ariadne
                 .with_message("unknown error")
-                .with_label(ariadne::Label::new(*span).with_message(error)),
+                .with_label(ariadne::Label::new(resolve(span)).with_message(error)),
         }
         .finish()
     }

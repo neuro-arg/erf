@@ -157,11 +157,14 @@ impl Construct<Span> for (usize, usize) {
     }
 }
 
-fn show_err(_filename: &str, code: &str, err: diag::Error) {
-    let cache = (0u8, ariadne::Source::from(code));
-    err.to_ariadne(ariadne::Report::build(ariadne::ReportKind::Error, 0, 0))
-        .eprint(cache)
-        .unwrap();
+fn show_err(filename: &str, code: &str, err: diag::Error) {
+    let cache = (filename, ariadne::Source::from(code));
+    err.to_ariadne(
+        &[filename],
+        ariadne::Report::build(ariadne::ReportKind::Error, filename, 0),
+    )
+    .eprint(cache)
+    .unwrap();
 }
 
 fn main() {
