@@ -180,6 +180,7 @@ fn main() {
     let parser = grammar::ScriptParser::default();
     let input_file = std::env::args().nth(1).expect("expected filename");
     let text = std::fs::read_to_string(&input_file).expect("unable to read file");
+    println!("text -> ast");
     let ast = match parser
         .parse(&mut ParseCtx { file: 0 }, &text)
         .map_err(|err| {
@@ -196,6 +197,7 @@ fn main() {
         }
     };
     let mut ctx = hir::Ctx::default();
+    println!("ast -> hir");
     let (bindings, scope) = match ctx.lower_ast(ast) {
         Ok(x) => x,
         Err(err) => {
@@ -210,13 +212,20 @@ fn main() {
         .args(["types.dot", "-Tpng", "-o", "types.png"])
         .spawn();
     let main_var = bindings.get("main").expect("main not found");
+    let (main_var, poly) = match main_var {
+        hir::VarType::Mono(var) => (var, false),
+        hir::VarType::Poly(var) => (var, true),
+    };
+    let ty = ctx.ck.add_pos(typeck::Pos::Var(main_var), Span::default());
+    let ty = if poly { ctx.ck.monomorphize(ty, 0) } else { ty };
+    println!("hir -> value");
     println!(
         "{:?}",
         hir_eval::eval_term(
             &mut scope.try_into().unwrap(),
             hir::Term {
                 inner: hir::TermInner::VarAccess(main_var),
-                ty: ctx.ck.add_pos(typeck::Pos::Var(main_var), Span::default())
+                ty,
             }
         )
         .unwrap()

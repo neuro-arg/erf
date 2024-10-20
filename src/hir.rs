@@ -26,6 +26,12 @@ pub enum Value {
     Intrinsic(Intrinsic),
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum VarType {
+    Mono(VarId),
+    Poly(VarId),
+}
+
 #[derive(Clone, Debug)]
 pub enum TermInner {
     Application(Box<Term>, Box<Term>),
@@ -70,7 +76,7 @@ pub struct Term {
 
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ck_map: HashMap<String, Vec<VarId>>,
+    ck_map: HashMap<String, Vec<VarType>>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,13 +86,13 @@ struct Binding {
 }
 
 impl Bindings {
-    fn insert_ck(&mut self, s: String, var: VarId) {
+    fn insert_ck(&mut self, s: String, var: VarType) {
         self.ck_map.entry(s).or_default().push(var);
     }
     fn remove_ck(&mut self, s: &str) {
         self.ck_map.get_mut(s).unwrap().pop();
     }
-    pub fn get(&self, s: &str) -> Option<VarId> {
+    pub fn get(&self, s: &str) -> Option<VarType> {
         self.ck_map.get(s).and_then(|x| x.last()).copied()
     }
     fn insert_pattern(
@@ -100,7 +106,7 @@ impl Bindings {
         match pat.inner {
             ast::PatternInner::Variable(name) => {
                 to_pop.push(name.clone());
-                self.insert_ck(name, var);
+                self.insert_ck(name, VarType::Mono(var));
             }
         }
         (ret1, to_pop)
@@ -113,7 +119,7 @@ impl Bindings {
         // easily be lowered and more likely than not is broken)
         for (var, _var_out, pat) in arms {
             to_pop.push(pat.label());
-            self.insert_ck(pat.label(), var);
+            self.insert_ck(pat.label(), VarType::Poly(var));
         }
         to_pop
     }
@@ -182,6 +188,7 @@ impl Ctx {
         &mut self,
         bindings: &mut Bindings,
         expr: ast::Expr,
+        level: u16,
     ) -> Result<Term, diag::Error> {
         match expr.inner {
             ast::ExprInner::LetRec(arms, body) => {
@@ -192,7 +199,7 @@ impl Ctx {
                         // first, allocate the variable that is to be assigned <expr1>
                         let var = *var_cache
                             .entry(pat.label())
-                            .or_insert_with(|| self.ck.add_var(Some(pat.label())));
+                            .or_insert_with(|| self.ck.add_var(Some(pat.label()), level + 1));
                         // its span is to be the pattern's span
                         let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
                         ((var, var_out, pat), (var, var_inp, expr))
@@ -202,14 +209,14 @@ impl Ctx {
                 bindings.new_scope_let(pats, |bindings| {
                     let mut vars = Vec::new();
                     for (var, var_inp, expr1) in exprs {
-                        let expr1 = self.lower_expr(bindings, *expr1)?;
+                        let expr1 = self.lower_expr(bindings, *expr1, level + 1)?;
                         // now direct expr1 to var_inp (assignment)
                         self.ck.flow(expr1.ty, var_inp)?;
                         // and actually bind this variable
                         vars.push((var, expr1));
                     }
                     // finally, lower expr2 in the new scope
-                    let expr = self.lower_expr(bindings, *body)?;
+                    let expr = self.lower_expr(bindings, *body, level)?;
                     Ok(Term {
                         ty: expr.ty,
                         inner: TermInner::Bind {
@@ -221,13 +228,13 @@ impl Ctx {
             }
             ast::ExprInner::Lambda(pat, body) => {
                 // first, allocate a new variable to be used for the arg
-                let arg = self.ck.add_var(pat.label());
+                let arg = self.ck.add_var(pat.label(), level);
                 // its span is to be the pattern's span
                 let (arg_out, arg_inp) = arg.polarize(&mut self.ck, pat.span);
                 bindings.new_scope(pat, arg, arg_out, |bindings, vars| {
                     let func_span = expr.span;
                     // now, lower the body with that var assigned
-                    let body1 = self.lower_expr(bindings, *body)?;
+                    let body1 = self.lower_expr(bindings, *body, level)?;
                     // the type will be a function that takes arg's type and returns body's type
                     let ty = Pos::Func(arg_inp, body1.ty);
                     // its span will be the function's span
@@ -252,12 +259,12 @@ impl Ctx {
             }
             ast::ExprInner::BinOp(op, a, b) => {
                 let func_span = a.span;
-                let func = self.lower_expr(bindings, *a)?;
-                let arg = self.lower_expr(bindings, *b)?;
+                let func = self.lower_expr(bindings, *a, level)?;
+                let arg = self.lower_expr(bindings, *b, level)?;
                 match op {
                     ast::BinOp::Call => {
                         // the var where we will store the result
-                        let ret = self.ck.add_var(None);
+                        let ret = self.ck.add_var(None, level);
                         // ret's span is just the entire expr
                         let (ret_out, ret_inp) = ret.polarize(&mut self.ck, expr.span);
                         let func_inp = Neg::Func(arg.ty, ret_inp);
@@ -327,7 +334,16 @@ impl Ctx {
                 let var = bindings
                     .get(&var)
                     .ok_or_else(|| diag::NameNotFoundError::new(var, expr.span))?;
+                let (var, poly) = match var {
+                    VarType::Mono(var) => (var, false),
+                    VarType::Poly(var) => (var, true),
+                };
                 let ty = self.ck.add_pos(Pos::Var(var), expr.span);
+                let ty = if poly {
+                    self.ck.monomorphize(ty, level)
+                } else {
+                    ty
+                };
                 Ok(Term {
                     inner: TermInner::VarAccess(var),
                     ty,
@@ -340,6 +356,7 @@ impl Ctx {
         let mut bindings = Bindings::default();
         let mut ret1 = Scope::default();
         let mut var_cache = HashMap::new();
+        let level = 0;
         let (pats, exprs) = ast
             .into_iter()
             .map(
@@ -351,7 +368,7 @@ impl Ctx {
                     // first, allocate the variable that is to be assigned <expr1>
                     let var = *var_cache
                         .entry(pat.label())
-                        .or_insert_with(|| self.ck.add_var(Some(pat.label())));
+                        .or_insert_with(|| self.ck.add_var(Some(pat.label()), level + 1));
                     // its span is to be the pattern's span
                     let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
                     ((var, var_out, pat), (var, var_inp, expr))
@@ -361,7 +378,7 @@ impl Ctx {
         // now create a new scope with that var and lower the expr in that scope
         let _ = bindings.insert_pattern_let(pats);
         for (var, var_inp, expr1) in exprs {
-            let expr1 = self.lower_expr(&mut bindings, expr1)?;
+            let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?;
             // now direct expr1 to var_inp (assignment)
             self.ck.flow(expr1.ty, var_inp)?;
             // and actually bind this variable

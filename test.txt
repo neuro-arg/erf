@@ -1,7 +1,4 @@
 # test
-test = x => x;
-main =
-  let
-    w = (x => test);
-    r = w 5;
-  in r 6;
+id = x => x;
+main = (id => id id 6) id;
+

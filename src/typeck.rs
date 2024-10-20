@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     hash::Hash,
 };
 
@@ -73,11 +73,12 @@ pub enum Neg {
     Func(PosIdS, NegIdS),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct VarState {
     label: Option<String>,
     union: OrderedSet<PosIdS>,
     inter: OrderedSet<NegIdS>,
+    level: u16,
 }
 
 #[derive(Debug, Default)]
@@ -105,9 +106,10 @@ impl ConstraintGraph {
 }
 
 impl TypeCk {
-    pub fn add_var(&mut self, label: Option<String>) -> VarId {
+    pub fn add_var(&mut self, label: Option<String>, level: u16) -> VarId {
         self.vars.push(VarState {
             label,
+            level,
             ..VarState::default()
         });
         VarId(self.vars.len() - 1)
@@ -140,12 +142,39 @@ impl TypeCk {
             _ => None,
         }
     }
+    pub fn pos_level(&self, pos: &Pos) -> u16 {
+        match pos {
+            Pos::Var(var) => self.vars[var.0].level,
+            Pos::Func(neg, pos) => self
+                .neg_level(self.neg(neg.0))
+                .max(self.pos_level(self.pos(pos.0))),
+            Pos::Record(rec) => rec
+                .values()
+                .map(|x| self.pos_level(self.pos(x.id())))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+    pub fn neg_level(&self, neg: &Neg) -> u16 {
+        match neg {
+            Neg::Var(var) => self.vars[var.0].level,
+            Neg::Func(pos, neg) => self
+                .pos_level(self.pos(pos.id()))
+                .max(self.neg_level(self.neg(neg.id()))),
+            Neg::Record(rec) => rec
+                .values()
+                .map(|x| self.neg_level(self.neg(x.id())))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
     pub fn flow(&mut self, pos: PosIdS, neg: NegIdS) -> Result<(), diag::TypeError> {
-        let q = &mut self.q;
         // reuse queue buffer, but clear it every time
-        q.queue.clear();
-        q.enqueue(pos, neg);
-        while let Some((pos, neg)) = q.queue.pop_front() {
+        self.q.queue.clear();
+        self.q.enqueue(pos, neg);
+        while let Some((pos, neg)) = self.q.queue.pop_front() {
             match (&self.pos[pos.0 .0], &self.neg[neg.0 .0]) {
                 (Pos::Void, Neg::Void) => {}
                 (Pos::Bool, Neg::Bool) => {}
@@ -216,7 +245,7 @@ impl TypeCk {
                     let (mut pos, pos1) = (pos1.iter(), pos);
                     for (k, neg) in neg {
                         if let Some((_, pos)) = pos.find(|x| x.0 == k) {
-                            q.enqueue(*pos, *neg);
+                            self.q.enqueue(*pos, *neg);
                         } else {
                             // missing field
                             return Err(diag::TypeError::new(
@@ -232,21 +261,47 @@ impl TypeCk {
                 }
                 (Pos::Func(pos_a, pos_b), Neg::Func(neg_a, neg_b)) => {
                     // ensure function of type pos_a -> pos_b can consume values of type neg_a
-                    q.enqueue(*neg_a, *pos_a);
+                    self.q.enqueue(*neg_a, *pos_a);
                     // ensure function of type pos_a -> pos_b produces values of type neg_b
-                    q.enqueue(*pos_b, *neg_b);
+                    self.q.enqueue(*pos_b, *neg_b);
                 }
-                (Pos::Var(pos), _) => {
+                (Pos::Var(pos), neg0) => {
+                    let pos = *pos;
+                    let neg = if self.vars[pos.0].level < self.neg_level(neg0) {
+                        self.monomorphize_neg(
+                            neg,
+                            self.vars[pos.0].level,
+                            &mut HashMap::new(),
+                            &mut HashMap::new(),
+                            &mut HashMap::new(),
+                            true,
+                        )
+                    } else {
+                        neg
+                    };
                     if self.vars[pos.0].inter.insert(neg).0 {
                         for x in &self.vars[pos.0].union {
-                            q.enqueue(*x, neg);
+                            self.q.enqueue(*x, neg);
                         }
                     }
                 }
-                (_, Neg::Var(neg)) => {
+                (pos0, Neg::Var(neg)) => {
+                    let neg = *neg;
+                    let pos = if self.vars[neg.0].level < self.pos_level(pos0) {
+                        self.monomorphize_pos(
+                            pos,
+                            self.vars[neg.0].level,
+                            &mut HashMap::new(),
+                            &mut HashMap::new(),
+                            &mut HashMap::new(),
+                            true,
+                        )
+                    } else {
+                        pos
+                    };
                     if self.vars[neg.0].union.insert(pos).0 {
                         for y in &self.vars[neg.0].inter {
-                            q.enqueue(pos, *y);
+                            self.q.enqueue(pos, *y);
                         }
                     }
                 }
@@ -263,6 +318,150 @@ impl TypeCk {
             }
         }
         Ok(())
+    }
+    fn monomorphize_pos(
+        &mut self,
+        pos: PosIdS,
+        level: u16,
+        var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
+        pos_cache: &mut HashMap<PosIdS, PosIdS>,
+        neg_cache: &mut HashMap<NegIdS, NegIdS>,
+        add_link: bool,
+    ) -> PosIdS {
+        if let Some(entry) = pos_cache.get(&pos) {
+            return *entry;
+        }
+        let pos1 = self.pos(pos.id());
+        let pos1 = match pos1 {
+            Pos::Var(var) => {
+                let var = *var;
+                let (ret, pos_ok, neg_ok) = var_cache.entry(var).or_insert_with(|| {
+                    (
+                        self.add_var(self.vars[var.0].label.clone(), level),
+                        false,
+                        false,
+                    )
+                });
+                let ret = *ret;
+                if !*pos_ok {
+                    *pos_ok = true;
+                    if add_link {
+                        let neg = self.add_neg(Neg::Var(ret), pos.span());
+                        self.vars[var.0].inter.insert(neg);
+                    } else {
+                        *neg_ok = true;
+                        for x in &self.vars[var.0].inter.clone() {
+                            let x = self.monomorphize_neg(
+                                *x, level, var_cache, pos_cache, neg_cache, add_link,
+                            );
+                            self.vars[ret.0].inter.insert(x);
+                        }
+                    }
+                    for x in &self.vars[var.0].union.clone() {
+                        let x = self
+                            .monomorphize_pos(*x, level, var_cache, pos_cache, neg_cache, add_link);
+                        self.vars[ret.0].union.insert(x);
+                    }
+                }
+                Pos::Var(ret)
+            }
+            Pos::Func(neg, pos) => {
+                let neg = *neg;
+                let pos = *pos;
+                Pos::Func(
+                    self.monomorphize_neg(neg, level, var_cache, pos_cache, neg_cache, add_link),
+                    self.monomorphize_pos(pos, level, var_cache, pos_cache, neg_cache, add_link),
+                )
+            }
+            Pos::Record(x) => {
+                let mut rec = x.clone();
+                for v in rec.values_mut() {
+                    self.monomorphize_pos(*v, level, var_cache, pos_cache, neg_cache, add_link);
+                }
+                Pos::Record(rec)
+            }
+            _ => return pos,
+        };
+        let ret = self.add_pos(pos1, pos.span());
+        pos_cache.insert(pos, ret);
+        ret
+    }
+    pub fn monomorphize(&mut self, pos: PosIdS, level: u16) -> PosIdS {
+        self.monomorphize_pos(
+            pos,
+            level,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            false,
+        )
+    }
+    fn monomorphize_neg(
+        &mut self,
+        neg: NegIdS,
+        level: u16,
+        var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
+        pos_cache: &mut HashMap<PosIdS, PosIdS>,
+        neg_cache: &mut HashMap<NegIdS, NegIdS>,
+        add_link: bool,
+    ) -> NegIdS {
+        if let Some(entry) = neg_cache.get(&neg) {
+            return *entry;
+        }
+        let neg1 = self.neg(neg.id());
+        let neg1 = match neg1 {
+            Neg::Var(var) => {
+                let var = *var;
+                let (ret, pos_ok, neg_ok) = var_cache.entry(var).or_insert_with(|| {
+                    (
+                        self.add_var(self.vars[var.0].label.clone(), level),
+                        false,
+                        false,
+                    )
+                });
+                let ret = *ret;
+                if !*neg_ok {
+                    *neg_ok = true;
+                    if add_link {
+                        let pos = self.add_pos(Pos::Var(ret), neg.span());
+                        self.vars[var.0].union.insert(pos);
+                    } else {
+                        *pos_ok = true;
+                        for x in &self.vars[var.0].union.clone() {
+                            let x = self.monomorphize_pos(
+                                *x, level, var_cache, pos_cache, neg_cache, add_link,
+                            );
+                            self.vars[ret.0].union.insert(x);
+                        }
+                    }
+                    for x in &self.vars[var.0].inter.clone() {
+                        let x = self
+                            .monomorphize_neg(*x, level, var_cache, pos_cache, neg_cache, add_link);
+                        self.vars[ret.0].inter.insert(x);
+                    }
+                }
+                Neg::Var(ret)
+            }
+            Neg::Func(pos, neg) => {
+                let pos = *pos;
+                let neg = *neg;
+                Neg::Func(
+                    self.monomorphize_pos(pos, level, var_cache, pos_cache, neg_cache, add_link),
+                    self.monomorphize_neg(neg, level, var_cache, pos_cache, neg_cache, add_link),
+                )
+            }
+            Neg::Record(x) => {
+                let mut rec = x.clone();
+                for v in rec.values_mut() {
+                    self.monomorphize_neg(*v, level, var_cache, pos_cache, neg_cache, add_link);
+                }
+                Neg::Record(rec)
+            }
+            _ => return neg,
+        };
+        let ret = self.add_neg(neg1, neg.span());
+        neg_cache.insert(neg, ret);
+        ret
     }
     fn pos_gv_node_id(&self, p: PosId) -> String {
         match self.pos(p) {
