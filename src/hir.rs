@@ -8,7 +8,7 @@ use malachite::num::logic::traits::SignificantBits;
 use crate::{
     ast::{self, LetPattern},
     diag,
-    typeck::{Neg, Pos, PosIdS, TypeCk, VarId},
+    typeck::{Neg, Pos, PosIdS, PosPrim, TypeCk, VarId},
     util::OrderedMap,
 };
 
@@ -283,8 +283,8 @@ impl Ctx {
             ast::ExprInner::UnOp(..) => todo!(),
             ast::ExprInner::Literal(kind, value) => (match kind {
                 ast::LiteralKind::Bool => match value.as_str() {
-                    "false" => Ok((Value::Bool(false), Pos::Bool)),
-                    "true" => Ok((Value::Bool(true), Pos::Bool)),
+                    "false" => Ok((Value::Bool(false), Pos::Prim(PosPrim::Bool))),
+                    "true" => Ok((Value::Bool(true), Pos::Prim(PosPrim::Bool))),
                     x => Err(diag::Error::Other(
                         format!("unexpected boolean literal: {x}"),
                         expr.span,
@@ -311,7 +311,10 @@ impl Ctx {
                             ));
                         };
                         let signed = val < 0;
-                        Ok((Value::Int(val), Pos::IntLiteral { signed, bits }))
+                        Ok((
+                            Value::Int(val),
+                            Pos::Prim(PosPrim::IntLiteral { signed, bits }),
+                        ))
                     }
                     Err(()) => Err(diag::Error::Other(
                         "invalid integer literal".to_owned(),
@@ -319,7 +322,7 @@ impl Ctx {
                     )),
                 },
                 ast::LiteralKind::Float => match value.parse::<f64>() {
-                    Ok(val) => Ok((Value::Float(val), Pos::FloatLiteral)),
+                    Ok(val) => Ok((Value::Float(val), Pos::Prim(PosPrim::FloatLiteral))),
                     Err(err) => Err(diag::Error::Other(
                         format!("invalid float literal: {err}"),
                         expr.span,

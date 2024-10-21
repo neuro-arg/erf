@@ -15,7 +15,7 @@ mod grammar;
 mod typeck;
 mod util;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Span {
     file: u8,
     left: usize,
