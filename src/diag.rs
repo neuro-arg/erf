@@ -298,7 +298,7 @@ impl HumanType {
             }));
         }
         rec.0.insert(pos.into(), None);
-        let ret = match ck.pos(pos) {
+        let ret = match ck.ty(pos) {
             Pos::Prim(PosPrim::Void) => Self::Void,
             Pos::Prim(PosPrim::Bool) => Self::Bool,
             Pos::Prim(PosPrim::Int { signed, bits }) => Self::Int {
@@ -327,7 +327,7 @@ impl HumanType {
                     }
                 };
                 if new || true {
-                    let u = Self::union(ck, ck.pos_var(*x), rec);
+                    let u = Self::union(ck, ck.var(*x), rec);
                     Self::union2(Self::Var(i), u)
                 } else {
                     Self::Var(i)
@@ -357,7 +357,7 @@ impl HumanType {
             }));
         }
         rec.0.insert(neg.into(), None);
-        let ret = match ck.neg(neg) {
+        let ret = match ck.ty(neg) {
             Neg::Prim(NegPrim::Void) => Self::Void,
             Neg::Prim(NegPrim::Bool) => Self::Bool,
             Neg::Prim(NegPrim::Int { signed, bits }) => Self::Int {
@@ -381,7 +381,7 @@ impl HumanType {
                     }
                 };
                 if new || true {
-                    let u = Self::inter(ck, ck.neg_var(*x), rec);
+                    let u = Self::inter(ck, ck.var(*x), rec);
                     Self::inter2(Self::Var(i), u)
                 } else {
                     Self::Var(i)

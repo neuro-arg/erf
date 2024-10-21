@@ -15,12 +15,17 @@ pub struct VarId(usize);
 impl VarId {
     pub fn polarize(&self, ck: &mut TypeCk, span: Span) -> (PosIdS, NegIdS) {
         let (pos, neg) = (Pos::Var(*self), Neg::Var(*self));
-        (ck.add_pos(pos, span), ck.add_neg(neg, span))
+        (ck.add_ty(pos, span), ck.add_ty(neg, span))
     }
 }
 
 pub trait PolarPrimitive: Clone + Eq + Hash {
     type Inverse: PolarPrimitive<Inverse = Self>;
+    const POSITIVE: bool;
+    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>);
+    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>>;
+    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>>;
+    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -43,10 +48,36 @@ pub enum NegPrim {
 
 impl PolarPrimitive for PosPrim {
     type Inverse = NegPrim;
+    const POSITIVE: bool = true;
+    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
+        (&mut ck.pos, &mut ck.pos_spans)
+    }
+    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
+        &ck.pos
+    }
+    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
+        &mut var.union
+    }
+    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
+        &var.union
+    }
 }
 
 impl PolarPrimitive for NegPrim {
     type Inverse = PosPrim;
+    const POSITIVE: bool = false;
+    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
+        (&mut ck.neg, &mut ck.neg_spans)
+    }
+    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
+        &ck.neg
+    }
+    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
+        &mut var.inter
+    }
+    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
+        &var.inter
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -67,7 +98,7 @@ pub type Pos = PolarType<PosPrim>;
 pub type Neg = PolarType<NegPrim>;
 
 #[derive(Clone, Debug, Default)]
-struct VarState {
+pub struct VarState {
     label: Option<String>,
     union: OrderedSet<PosIdS>,
     inter: OrderedSet<NegIdS>,
@@ -107,57 +138,36 @@ impl TypeCk {
         });
         VarId(self.vars.len() - 1)
     }
-    pub fn add_pos(&mut self, pos: Pos, span: Span) -> PosIdS {
-        self.pos.push(pos);
-        self.pos_spans.push(span);
-        PosIdS::new(PosId::new(self.pos.len() - 1), span)
+    pub fn add_ty<T: PolarPrimitive>(&mut self, ty: PolarType<T>, span: Span) -> IdSpan<T> {
+        let (types, spans) = T::typeck_data_mut(self);
+        types.push(ty);
+        spans.push(span);
+        IdSpan::new(Id::new(types.len() - 1), span)
     }
-    pub fn add_neg(&mut self, neg: Neg, span: Span) -> NegIdS {
-        self.neg.push(neg);
-        self.neg_spans.push(span);
-        NegIdS::new(NegId::new(self.neg.len() - 1), span)
+    pub fn var<'a, T: 'a + PolarPrimitive>(
+        &'a self,
+        var: VarId,
+    ) -> impl '_ + Iterator<Item = Id<T>> {
+        T::var_data(&self.vars[var.0]).into_iter().map(IdSpan::id)
     }
-    pub fn pos_var(&self, var: VarId) -> impl '_ + Iterator<Item = PosId> {
-        self.vars[var.0].union.into_iter().map(IdSpan::id)
-    }
-    pub fn neg_var(&self, var: VarId) -> impl '_ + Iterator<Item = NegId> {
-        self.vars[var.0].inter.into_iter().map(IdSpan::id)
-    }
-    pub fn pos(&self, id: PosId) -> &Pos {
-        &self.pos[id.id()]
-    }
-    pub fn neg(&self, id: NegId) -> &Neg {
-        &self.neg[id.id()]
+    pub fn ty<T: PolarPrimitive>(&self, id: Id<T>) -> &PolarType<T> {
+        &T::typeck_data(self)[id.id()]
     }
     pub fn pos_as_var(&self, pos: PosId) -> Option<VarId> {
-        match self.pos(pos) {
+        match self.ty(pos) {
             Pos::Var(var) => Some(*var),
             _ => None,
         }
     }
-    pub fn pos_level(&self, pos: &Pos) -> u16 {
-        match pos {
-            Pos::Var(var) => self.vars[var.0].level,
-            Pos::Func(neg, pos) => self
-                .neg_level(self.neg(neg.id()))
-                .max(self.pos_level(self.pos(pos.id()))),
-            Pos::Record(rec) => rec
+    pub fn level<T: PolarPrimitive>(&self, ty: &PolarType<T>) -> u16 {
+        match ty {
+            PolarType::Var(var) => self.vars[var.0].level,
+            PolarType::Func(neg, pos) => self
+                .level(self.ty(neg.id()))
+                .max(self.level(self.ty(pos.id()))),
+            PolarType::Record(rec) => rec
                 .values()
-                .map(|x| self.pos_level(self.pos(x.id())))
-                .max()
-                .unwrap_or(0),
-            _ => 0,
-        }
-    }
-    pub fn neg_level(&self, neg: &Neg) -> u16 {
-        match neg {
-            Neg::Var(var) => self.vars[var.0].level,
-            Neg::Func(pos, neg) => self
-                .pos_level(self.pos(pos.id()))
-                .max(self.neg_level(self.neg(neg.id()))),
-            Neg::Record(rec) => rec
-                .values()
-                .map(|x| self.neg_level(self.neg(x.id())))
+                .map(|x| self.level(self.ty(x.id())))
                 .max()
                 .unwrap_or(0),
             _ => 0,
@@ -258,7 +268,7 @@ impl TypeCk {
                 }
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
-                    let neg = if self.vars[pos.0].level < self.neg_level(neg0) {
+                    let neg = if self.vars[pos.0].level < self.level(neg0) {
                         self.monomorphize_neg(
                             neg,
                             self.vars[pos.0].level,
@@ -278,7 +288,7 @@ impl TypeCk {
                 }
                 (pos0, Neg::Var(neg)) => {
                     let neg = *neg;
-                    let pos = if self.vars[neg.0].level < self.pos_level(pos0) {
+                    let pos = if self.vars[neg.0].level < self.level(pos0) {
                         self.monomorphize_pos(
                             pos,
                             self.vars[neg.0].level,
@@ -322,7 +332,7 @@ impl TypeCk {
         if let Some(entry) = pos_cache.get(&pos) {
             return *entry;
         }
-        let pos1 = self.pos(pos.id());
+        let pos1 = self.ty(pos.id());
         let pos1 = match pos1 {
             Pos::Var(var) => {
                 let var = *var;
@@ -337,7 +347,7 @@ impl TypeCk {
                 if !*pos_ok {
                     *pos_ok = true;
                     if add_link {
-                        let neg = self.add_neg(Neg::Var(ret), pos.span());
+                        let neg = self.add_ty(Neg::Var(ret), pos.span());
                         self.vars[var.0].inter.insert(neg);
                     } else {
                         *neg_ok = true;
@@ -373,7 +383,7 @@ impl TypeCk {
             }
             _ => return pos,
         };
-        let ret = self.add_pos(pos1, pos.span());
+        let ret = self.add_ty(pos1, pos.span());
         pos_cache.insert(pos, ret);
         ret
     }
@@ -399,7 +409,7 @@ impl TypeCk {
         if let Some(entry) = neg_cache.get(&neg) {
             return *entry;
         }
-        let neg1 = self.neg(neg.id());
+        let neg1 = self.ty(neg.id());
         let neg1 = match neg1 {
             Neg::Var(var) => {
                 let var = *var;
@@ -414,7 +424,7 @@ impl TypeCk {
                 if !*neg_ok {
                     *neg_ok = true;
                     if add_link {
-                        let pos = self.add_pos(Pos::Var(ret), neg.span());
+                        let pos = self.add_ty(Pos::Var(ret), neg.span());
                         self.vars[var.0].union.insert(pos);
                     } else {
                         *pos_ok = true;
@@ -450,28 +460,22 @@ impl TypeCk {
             }
             _ => return neg,
         };
-        let ret = self.add_neg(neg1, neg.span());
+        let ret = self.add_ty(neg1, neg.span());
         neg_cache.insert(neg, ret);
         ret
     }
-    fn pos_gv_node_id(&self, p: PosId) -> String {
-        match self.pos(p) {
-            Pos::Var(v) => format!("+v{}", v.0),
-            _ => format!("+{}", p.id()),
-        }
-    }
-    fn neg_gv_node_id(&self, p: NegId) -> String {
-        match self.neg(p) {
-            Neg::Var(v) => format!("-v{}", v.0),
-            _ => format!("-{}", p.id()),
+    fn gv_node_id<T: PolarPrimitive>(&self, p: Id<T>) -> String {
+        match self.ty(p) {
+            PolarType::Var(v) => format!("{}v{}", if T::POSITIVE { '+' } else { '-' }, v.0),
+            _ => format!("{}{}", if T::POSITIVE { '+' } else { '-' }, p.id()),
         }
     }
     pub fn graphviz(&self, src: &str) -> String {
         let mut ret = vec!["strict digraph t {".to_owned()];
         let id = |id: &str| format!("{:?}", id);
         for (i, _var) in self.pos.iter().enumerate() {
-            let name = id(&self.pos_gv_node_id(PosId::new(i)));
-            let mut label = self.pos_gv_node_id(PosId::new(i));
+            let name = id(&self.gv_node_id(PosId::new(i)));
+            let mut label = self.gv_node_id(PosId::new(i));
             if label.contains('v') {
                 label.push('\n');
                 label.push_str(&format!("+{i}"));
@@ -483,8 +487,8 @@ impl TypeCk {
             ret.push(format!("  {name}[label={}]", id(&label)));
         }
         for (i, _var) in self.neg.iter().enumerate() {
-            let name = id(&self.neg_gv_node_id(NegId::new(i)));
-            let mut label = self.neg_gv_node_id(NegId::new(i));
+            let name = id(&self.gv_node_id(NegId::new(i)));
+            let mut label = self.gv_node_id(NegId::new(i));
             if label.contains('v') {
                 label.push('\n');
                 label.push_str(&format!("-{i}"));
@@ -502,8 +506,8 @@ impl TypeCk {
             ret.push(format!("  {neg} -> {pos}[info={label}]"));
         }
         for (pos, neg) in &self.q.constraints {
-            let pos = id(&self.pos_gv_node_id(pos.id()));
-            let neg = id(&self.neg_gv_node_id(neg.id()));
+            let pos = id(&self.gv_node_id(pos.id()));
+            let neg = id(&self.gv_node_id(neg.id()));
             ret.push(format!("  {pos} -> {neg} [color=red]"));
         }
         ret.push("}".to_owned());

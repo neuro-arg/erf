@@ -216,7 +216,7 @@ fn main() {
         hir::VarType::Mono(var) => (var, false),
         hir::VarType::Poly(var) => (var, true),
     };
-    let ty = ctx.ck.add_pos(typeck::Pos::Var(main_var), Span::default());
+    let ty = ctx.ck.add_ty(typeck::Pos::Var(main_var), Span::default());
     let ty = if poly { ctx.ck.monomorphize(ty, 0) } else { ty };
     println!("hir -> value");
     println!(

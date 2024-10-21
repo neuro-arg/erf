@@ -238,7 +238,7 @@ impl Ctx {
                     // the type will be a function that takes arg's type and returns body's type
                     let ty = Pos::Func(arg_inp, body1.ty);
                     // its span will be the function's span
-                    let ty = self.ck.add_pos(ty, func_span);
+                    let ty = self.ck.add_ty(ty, func_span);
                     // if new vars were created during pattern destructuring, bind them
                     let expr1 = if vars.is_empty() {
                         body1
@@ -269,7 +269,7 @@ impl Ctx {
                         let (ret_out, ret_inp) = ret.polarize(&mut self.ck, expr.span);
                         let func_inp = Neg::Func(arg.ty, ret_inp);
                         // the func's span is, well, the func's span
-                        let func_inp = self.ck.add_neg(func_inp, func_span);
+                        let func_inp = self.ck.add_ty(func_inp, func_span);
                         self.ck.flow(func.ty, func_inp)?;
                         Ok(Term {
                             inner: TermInner::Application(Box::new(func), Box::new(arg)),
@@ -330,7 +330,7 @@ impl Ctx {
                 },
             })
             .map(|(val, ty)| Term {
-                ty: self.ck.add_pos(ty, expr.span),
+                ty: self.ck.add_ty(ty, expr.span),
                 inner: TermInner::Value(val),
             }),
             ast::ExprInner::Variable(var) => {
@@ -341,7 +341,7 @@ impl Ctx {
                     VarType::Mono(var) => (var, false),
                     VarType::Poly(var) => (var, true),
                 };
-                let ty = self.ck.add_pos(Pos::Var(var), expr.span);
+                let ty = self.ck.add_ty(Pos::Var(var), expr.span);
                 let ty = if poly {
                     self.ck.monomorphize(ty, level)
                 } else {
