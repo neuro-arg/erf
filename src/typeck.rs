@@ -3,11 +3,15 @@ use std::{
     hash::Hash,
 };
 
+use polar::PolarPrimitive;
+
 use crate::{
     diag::{self, HumanType},
     util::{Either3, Id, IdSpan, OrderedSet},
     Span,
 };
+
+mod polar;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VarId(usize);
@@ -19,15 +23,6 @@ impl VarId {
     }
 }
 
-pub trait PolarPrimitive: Clone + Eq + Hash {
-    type Inverse: PolarPrimitive<Inverse = Self>;
-    const POSITIVE: bool;
-    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>);
-    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>>;
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>>;
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>>;
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PosPrim {
     Void,
@@ -36,6 +31,7 @@ pub enum PosPrim {
     Float { bits: u8 },
     IntLiteral { signed: bool, bits: u8 },
     FloatLiteral,
+    Record(BTreeMap<String, IdSpan<Self>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -44,137 +40,24 @@ pub enum NegPrim {
     Bool,
     Int { signed: bool, bits: u8 },
     Float { bits: u8 },
-}
-
-impl PolarPrimitive for PosPrim {
-    type Inverse = NegPrim;
-    const POSITIVE: bool = true;
-    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
-        (&mut ck.pos, &mut ck.pos_spans)
-    }
-    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
-        &ck.pos
-    }
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
-        &mut var.union
-    }
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
-        &var.union
-    }
-}
-
-impl PolarPrimitive for NegPrim {
-    type Inverse = PosPrim;
-    const POSITIVE: bool = false;
-    fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
-        (&mut ck.neg, &mut ck.neg_spans)
-    }
-    fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
-        &ck.neg
-    }
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
-        &mut var.inter
-    }
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
-        &var.inter
-    }
+    Record(String, IdSpan<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PolarType<T: PolarPrimitive> {
     Prim(T),
-    Record(BTreeMap<String, IdSpan<T>>),
     Var(VarId),
     Func(IdSpan<T::Inverse>, IdSpan<T>),
 }
 
-impl<T: PolarPrimitive> PolarType<T> {
-    fn ids(&self) -> impl '_ + Iterator<Item = Either3<&IdSpan<T>, &IdSpan<T::Inverse>, &VarId>> {
-        enum Iter<'a, T: PolarPrimitive> {
-            Var(std::option::IntoIter<&'a VarId>),
-            Func(
-                std::array::IntoIter<Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>, 2>,
-            ),
-            Record(std::collections::btree_map::Values<'a, String, IdSpan<T>>),
-            Prim,
-        }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>;
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                match self {
-                    Self::Var(x) => x.size_hint(),
-                    Self::Func(x) => x.size_hint(),
-                    Self::Record(x) => x.size_hint(),
-                    Self::Prim => (0, Some(0)),
-                }
-            }
-            fn next(&mut self) -> Option<Self::Item> {
-                match self {
-                    Self::Var(x) => x.next().map(Either3::C),
-                    Self::Func(x) => x.next(),
-                    Self::Record(x) => x.next().map(Either3::A),
-                    Self::Prim => None,
-                }
-            }
-        }
-        match self {
-            Self::Record(x) => Iter::<T>::Record(x.values()),
-            Self::Prim(_) => Iter::Prim,
-            Self::Var(v) => Iter::Var(Some(v).into_iter()),
-            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
-        }
-    }
-    fn ids_mut(
-        &mut self,
-    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<T>, &mut IdSpan<T::Inverse>, &mut VarId>>
-    {
-        enum Iter<'a, T: PolarPrimitive> {
-            Var(std::option::IntoIter<&'a mut VarId>),
-            Func(
-                std::array::IntoIter<
-                    Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>,
-                    2,
-                >,
-            ),
-            Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<T>>),
-            Prim,
-        }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>;
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                match self {
-                    Self::Var(x) => x.size_hint(),
-                    Self::Func(x) => x.size_hint(),
-                    Self::Record(x) => x.size_hint(),
-                    Self::Prim => (0, Some(0)),
-                }
-            }
-            fn next(&mut self) -> Option<Self::Item> {
-                match self {
-                    Self::Var(x) => x.next().map(Either3::C),
-                    Self::Func(x) => x.next(),
-                    Self::Record(x) => x.next().map(Either3::A),
-                    Self::Prim => None,
-                }
-            }
-        }
-        match self {
-            Self::Record(x) => Iter::<T>::Record(x.values_mut()),
-            Self::Prim(_) => Iter::Prim,
-            Self::Var(v) => Iter::Var(Some(v).into_iter()),
-            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
-        }
-    }
-}
+pub type Pos = PolarType<PosPrim>;
+pub type Neg = PolarType<NegPrim>;
 
 pub type PosId = Id<PosPrim>;
 pub type NegId = Id<NegPrim>;
 
 pub type PosIdS = IdSpan<PosPrim>;
 pub type NegIdS = IdSpan<NegPrim>;
-
-pub type Pos = PolarType<PosPrim>;
-pub type Neg = PolarType<NegPrim>;
 
 #[derive(Clone, Debug, Default)]
 pub struct VarState {
@@ -317,22 +200,20 @@ impl TypeCk {
                         }));
                     }
                 }
-                (Pos::Record(pos1), Neg::Record(neg)) => {
+                (Pos::Prim(PosPrim::Record(pos1)), Neg::Prim(NegPrim::Record(k, neg))) => {
                     let (mut pos, pos1) = (pos1.iter(), pos);
-                    for (k, neg) in neg {
-                        if let Some((_, pos)) = pos.find(|x| x.0 == k) {
-                            self.q.enqueue(*pos, *neg);
-                        } else {
-                            // missing field
-                            return Err(diag::TypeError::new(
-                                HumanType::from_pos(self, pos1.id()),
-                                HumanType::from_neg(self, neg.id()),
-                            )
-                            .with_hint(diag::TypeHint::MissingField {
-                                field: k.clone(),
-                                used: neg.span(),
-                            }));
-                        }
+                    if let Some((_, pos)) = pos.find(|x| x.0 == k) {
+                        self.q.enqueue(*pos, *neg);
+                    } else {
+                        // missing field
+                        return Err(diag::TypeError::new(
+                            HumanType::from_pos(self, pos1.id()),
+                            HumanType::from_neg(self, neg.id()),
+                        )
+                        .with_hint(diag::TypeHint::MissingField {
+                            field: k.clone(),
+                            used: neg.span(),
+                        }));
                     }
                 }
                 (Pos::Func(pos_a, pos_b), Neg::Func(neg_a, neg_b)) => {
@@ -344,7 +225,7 @@ impl TypeCk {
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
                     let neg = if self.vars[pos.0].level < self.level(neg0) {
-                        self.monomorphize2(
+                        self.change_level(
                             neg,
                             self.vars[pos.0].level,
                             &mut HashMap::new(),
@@ -364,7 +245,7 @@ impl TypeCk {
                 (pos0, Neg::Var(neg)) => {
                     let neg = *neg;
                     let pos = if self.vars[neg.0].level < self.level(pos0) {
-                        self.monomorphize2(
+                        self.change_level(
                             pos,
                             self.vars[neg.0].level,
                             &mut HashMap::new(),
@@ -395,14 +276,45 @@ impl TypeCk {
         }
         Ok(())
     }
-    fn monomorphize2<T: PolarPrimitive>(
+    /// This is a function used for let polymorphism. Each time the let binding is used, it may
+    /// have different types - for example, an identity function may have the type `bool -> bool`
+    /// in one place and `int -> int` in another place. To achieve this, we need to quantify
+    /// all free variables in the binding (instead of plain variables that we add constraints too,
+    /// they become quantified "forall" variables that can have different values in different
+    /// places)
+    ///
+    /// For this, we use the concept of levels. Levels keep track of how deeply this let binding
+    /// was defined. Within the binding context (i.e. in all expressions that are to be bound to
+    /// variables), all types have their level incremented by 1. Note that this doesn't happen for
+    /// the let expression body (the expression to be evaluated with the bindings in scope).
+    ///
+    /// Levels allow us to efficiently keep track of where each type is defined, and whether we
+    /// should treat it as a monomorphic or a polymorphic type.
+    ///
+    /// - If the type has a greater level than we are currently on, it is a polymorphic type.
+    /// - Otherwise, it is a monomorphic type.
+    ///
+    /// This function serves dual purpose:
+    ///
+    /// - When types of a higher level are connected to variables from a lower level, the lower
+    ///   level variable has to be "copied" to the higher level, because otherwise a direct flow
+    ///   would be created between lower level types and higher level types, which defeats the
+    ///   entire purpose of type levels (TODO explain why). This is the `raise == true`
+    ///   behavior.
+    /// - Copy all the variables on higher level to the current level. In that case, the type is
+    ///   simply copied, to make sure we can type it differently this time - plain and simple.
+    ///   This is the `raise == false` behavior.
+    ///
+    /// For more info, see https://okmij.org/ftp/ML/generalization.html#levels and
+    /// https://lptk.github.io/programming/2020/03/26/demystifying-mlsub.html#efficient-generalization
+    fn change_level<T: PolarPrimitive>(
         &mut self,
         ty: IdSpan<T>,
         level: u16,
         var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
         ty_cache_1: &mut HashMap<IdSpan<T>, IdSpan<T>>,
         ty_cache_2: &mut HashMap<IdSpan<T::Inverse>, IdSpan<T::Inverse>>,
-        add_link: bool,
+        raise: bool,
     ) -> IdSpan<T> {
         if let Some(entry) = ty_cache_1.get(&ty) {
             return *entry;
@@ -412,10 +324,10 @@ impl TypeCk {
         for id in ty1.ids_mut() {
             match id {
                 Either3::A(x) => {
-                    *x = self.monomorphize2(*x, level, var_cache, ty_cache_1, ty_cache_2, add_link);
+                    *x = self.change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
                 }
                 Either3::B(x) => {
-                    *x = self.monomorphize2(*x, level, var_cache, ty_cache_2, ty_cache_1, add_link);
+                    *x = self.change_level(*x, level, var_cache, ty_cache_2, ty_cache_1, raise);
                 }
                 Either3::C(var) => {
                     let var1 = *var;
@@ -430,22 +342,21 @@ impl TypeCk {
                     let ret = *ret;
                     if !*ok1 {
                         *ok1 = true;
-                        if add_link {
+                        if raise {
                             let neg = self.add_ty(PolarType::Var(ret), ty.span());
                             T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(neg);
                         } else {
                             *ok2 = true;
                             for x in &T::Inverse::var_data(&self.vars[var1.0]).clone() {
-                                let x = self.monomorphize2(
-                                    *x, level, var_cache, ty_cache_2, ty_cache_1, add_link,
+                                let x = self.change_level(
+                                    *x, level, var_cache, ty_cache_2, ty_cache_1, raise,
                                 );
                                 T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(x);
                             }
                         }
                         for x in &T::var_data(&self.vars[var1.0]).clone() {
-                            let x = self.monomorphize2(
-                                *x, level, var_cache, ty_cache_1, ty_cache_2, add_link,
-                            );
+                            let x = self
+                                .change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
                             T::var_data_mut(&mut self.vars[ret.0]).insert(x);
                         }
                     }
@@ -458,7 +369,7 @@ impl TypeCk {
         ret
     }
     pub fn monomorphize<T: PolarPrimitive>(&mut self, ty: IdSpan<T>, level: u16) -> IdSpan<T> {
-        self.monomorphize2(
+        self.change_level(
             ty,
             level,
             &mut HashMap::new(),
