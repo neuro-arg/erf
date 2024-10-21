@@ -1,5 +1,6 @@
 #![allow(clippy::match_single_binding)]
 #![allow(clippy::overly_complex_bool_expr)]
+#![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 
 use ast::{Expr, ExprInner, Ident, LiteralKind, Tld};
