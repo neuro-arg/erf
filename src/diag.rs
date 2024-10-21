@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    typeck::{Neg, NegId, Pos, PosId, TypeCk, VarId},
+    typeck::{Neg, NegId, NegPrim, Pos, PosId, PosPrim, TypeCk, VarId},
     Span,
 };
 
@@ -299,18 +299,18 @@ impl HumanType {
         }
         rec.0.insert(pos.into(), None);
         let ret = match ck.pos(pos) {
-            Pos::Void => Self::Void,
-            Pos::Bool => Self::Bool,
-            Pos::Int { signed, bits } => Self::Int {
+            Pos::Prim(PosPrim::Void) => Self::Void,
+            Pos::Prim(PosPrim::Bool) => Self::Bool,
+            Pos::Prim(PosPrim::Int { signed, bits }) => Self::Int {
                 signed: Some(*signed),
                 bits: Some(*bits),
             },
-            Pos::IntLiteral { signed, bits: _ } => Self::Int {
+            Pos::Prim(PosPrim::IntLiteral { signed, bits: _ }) => Self::Int {
                 signed: (!signed).then_some(*signed),
                 bits: None,
             },
-            Pos::Float { bits } => Self::Float { bits: Some(*bits) },
-            Pos::FloatLiteral => Self::Float { bits: None },
+            Pos::Prim(PosPrim::Float { bits }) => Self::Float { bits: Some(*bits) },
+            Pos::Prim(PosPrim::FloatLiteral) => Self::Float { bits: None },
             Pos::Record(x) => Self::Record(
                 x.iter()
                     .map(|(k, v)| (k.clone(), Self::from_pos2(ck, v.id(), rec)))
@@ -358,18 +358,13 @@ impl HumanType {
         }
         rec.0.insert(neg.into(), None);
         let ret = match ck.neg(neg) {
-            Neg::Void => Self::Void,
-            Neg::Bool => Self::Bool,
-            Neg::Int { signed, bits } => Self::Int {
+            Neg::Prim(NegPrim::Void) => Self::Void,
+            Neg::Prim(NegPrim::Bool) => Self::Bool,
+            Neg::Prim(NegPrim::Int { signed, bits }) => Self::Int {
                 signed: Some(*signed),
                 bits: Some(*bits),
             },
-            Neg::ArbitraryInt => Self::Int {
-                signed: None,
-                bits: None,
-            },
-            Neg::Float { bits } => Self::Float { bits: Some(*bits) },
-            Neg::ArbitraryFloat => Self::Float { bits: None },
+            Neg::Prim(NegPrim::Float { bits }) => Self::Float { bits: Some(*bits) },
             Neg::Record(x) => Self::Record(
                 x.iter()
                     .map(|(k, v)| (k.clone(), Self::from_neg2(ck, v.id(), rec)))
