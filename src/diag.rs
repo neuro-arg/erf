@@ -311,7 +311,7 @@ impl HumanType {
             },
             Pos::Prim(PosPrim::Float { bits }) => Self::Float { bits: Some(*bits) },
             Pos::Prim(PosPrim::FloatLiteral) => Self::Float { bits: None },
-            Pos::Record(x) => Self::Record(
+            Pos::Prim(PosPrim::Record(x)) => Self::Record(
                 x.iter()
                     .map(|(k, v)| (k.clone(), Self::from_pos2(ck, v.id(), rec)))
                     .collect(),
@@ -365,9 +365,9 @@ impl HumanType {
                 bits: Some(*bits),
             },
             Neg::Prim(NegPrim::Float { bits }) => Self::Float { bits: Some(*bits) },
-            Neg::Record(x) => Self::Record(
-                x.iter()
-                    .map(|(k, v)| (k.clone(), Self::from_neg2(ck, v.id(), rec)))
+            Neg::Prim(NegPrim::Record(k, v)) => Self::Record(
+                [(k.clone(), Self::from_neg2(ck, v.id(), rec))]
+                    .into_iter()
                     .collect(),
             ),
             Neg::Var(x) => {
