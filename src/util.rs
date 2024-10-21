@@ -195,3 +195,10 @@ impl<T> Debug for IdSpan<T> {
             .finish()
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub enum Either3<T, U, V> {
+    A(T),
+    B(U),
+    C(V),
+}

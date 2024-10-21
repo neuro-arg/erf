@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     diag::{self, HumanType},
-    util::{Id, IdSpan, OrderedSet},
+    util::{Either3, Id, IdSpan, OrderedSet},
     Span,
 };
 
@@ -88,6 +88,85 @@ pub enum PolarType<T: PolarPrimitive> {
     Func(IdSpan<T::Inverse>, IdSpan<T>),
 }
 
+impl<T: PolarPrimitive> PolarType<T> {
+    fn ids(&self) -> impl '_ + Iterator<Item = Either3<&IdSpan<T>, &IdSpan<T::Inverse>, &VarId>> {
+        enum Iter<'a, T: PolarPrimitive> {
+            Var(std::option::IntoIter<&'a VarId>),
+            Func(
+                std::array::IntoIter<Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>, 2>,
+            ),
+            Record(std::collections::btree_map::Values<'a, String, IdSpan<T>>),
+            Prim,
+        }
+        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
+            type Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>;
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                match self {
+                    Self::Var(x) => x.size_hint(),
+                    Self::Func(x) => x.size_hint(),
+                    Self::Record(x) => x.size_hint(),
+                    Self::Prim => (0, Some(0)),
+                }
+            }
+            fn next(&mut self) -> Option<Self::Item> {
+                match self {
+                    Self::Var(x) => x.next().map(Either3::C),
+                    Self::Func(x) => x.next(),
+                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Prim => None,
+                }
+            }
+        }
+        match self {
+            Self::Record(x) => Iter::<T>::Record(x.values()),
+            Self::Prim(_) => Iter::Prim,
+            Self::Var(v) => Iter::Var(Some(v).into_iter()),
+            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
+        }
+    }
+    fn ids_mut(
+        &mut self,
+    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<T>, &mut IdSpan<T::Inverse>, &mut VarId>>
+    {
+        enum Iter<'a, T: PolarPrimitive> {
+            Var(std::option::IntoIter<&'a mut VarId>),
+            Func(
+                std::array::IntoIter<
+                    Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>,
+                    2,
+                >,
+            ),
+            Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<T>>),
+            Prim,
+        }
+        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
+            type Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>;
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                match self {
+                    Self::Var(x) => x.size_hint(),
+                    Self::Func(x) => x.size_hint(),
+                    Self::Record(x) => x.size_hint(),
+                    Self::Prim => (0, Some(0)),
+                }
+            }
+            fn next(&mut self) -> Option<Self::Item> {
+                match self {
+                    Self::Var(x) => x.next().map(Either3::C),
+                    Self::Func(x) => x.next(),
+                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Prim => None,
+                }
+            }
+        }
+        match self {
+            Self::Record(x) => Iter::<T>::Record(x.values_mut()),
+            Self::Prim(_) => Iter::Prim,
+            Self::Var(v) => Iter::Var(Some(v).into_iter()),
+            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
+        }
+    }
+}
+
 pub type PosId = Id<PosPrim>;
 pub type NegId = Id<NegPrim>;
 
@@ -96,12 +175,6 @@ pub type NegIdS = IdSpan<NegPrim>;
 
 pub type Pos = PolarType<PosPrim>;
 pub type Neg = PolarType<NegPrim>;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum AnyId {
-    Pos(PosIdS),
-    Neg(NegIdS),
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct VarState {
@@ -166,18 +239,14 @@ impl TypeCk {
         }
     }
     pub fn level<T: PolarPrimitive>(&self, ty: &PolarType<T>) -> u16 {
-        match ty {
-            PolarType::Var(var) => self.vars[var.0].level,
-            PolarType::Func(neg, pos) => self
-                .level(self.ty(neg.id()))
-                .max(self.level(self.ty(pos.id()))),
-            PolarType::Record(rec) => rec
-                .values()
-                .map(|x| self.level(self.ty(x.id())))
-                .max()
-                .unwrap_or(0),
-            _ => 0,
-        }
+        ty.ids()
+            .map(|id| match id {
+                Either3::A(x) => self.level(self.ty(x.id())),
+                Either3::B(x) => self.level(self.ty(x.id())),
+                Either3::C(x) => self.vars[x.0].level,
+            })
+            .max()
+            .unwrap_or(0)
     }
     pub fn flow(&mut self, pos: PosIdS, neg: NegIdS) -> Result<(), diag::TypeError> {
         // reuse queue buffer, but clear it every time
@@ -339,64 +408,58 @@ impl TypeCk {
             return *entry;
         }
         let ty1 = self.ty(ty.id());
-        let ty1 = match ty1 {
-            PolarType::Var(var) => {
-                let var = *var;
-                let (ret, ok1, ok2) = var_cache.entry(var).or_insert_with(|| {
-                    (
-                        self.add_var(self.vars[var.0].label.clone(), level),
-                        false,
-                        false,
-                    )
-                });
-                let (ok1, ok2) = if T::POSITIVE { (ok1, ok2) } else { (ok2, ok1) };
-                let ret = *ret;
-                if !*ok1 {
-                    *ok1 = true;
-                    if add_link {
-                        let neg = self.add_ty(PolarType::Var(ret), ty.span());
-                        T::Inverse::var_data_mut(&mut self.vars[var.0]).insert(neg);
-                    } else {
-                        *ok2 = true;
-                        for x in &T::Inverse::var_data(&self.vars[var.0]).clone() {
+        let mut ty1 = ty1.clone();
+        for id in ty1.ids_mut() {
+            match id {
+                Either3::A(x) => {
+                    *x = self.monomorphize2(*x, level, var_cache, ty_cache_1, ty_cache_2, add_link);
+                }
+                Either3::B(x) => {
+                    *x = self.monomorphize2(*x, level, var_cache, ty_cache_2, ty_cache_1, add_link);
+                }
+                Either3::C(var) => {
+                    let var1 = *var;
+                    let (ret, ok1, ok2) = var_cache.entry(var1).or_insert_with(|| {
+                        (
+                            self.add_var(self.vars[var1.0].label.clone(), level),
+                            false,
+                            false,
+                        )
+                    });
+                    let (ok1, ok2) = if T::POSITIVE { (ok1, ok2) } else { (ok2, ok1) };
+                    let ret = *ret;
+                    if !*ok1 {
+                        *ok1 = true;
+                        if add_link {
+                            let neg = self.add_ty(PolarType::Var(ret), ty.span());
+                            T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(neg);
+                        } else {
+                            *ok2 = true;
+                            for x in &T::Inverse::var_data(&self.vars[var1.0]).clone() {
+                                let x = self.monomorphize2(
+                                    *x, level, var_cache, ty_cache_2, ty_cache_1, add_link,
+                                );
+                                T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(x);
+                            }
+                        }
+                        for x in &T::var_data(&self.vars[var1.0]).clone() {
                             let x = self.monomorphize2(
-                                *x, level, var_cache, ty_cache_2, ty_cache_1, add_link,
+                                *x, level, var_cache, ty_cache_1, ty_cache_2, add_link,
                             );
-                            T::Inverse::var_data_mut(&mut self.vars[var.0]).insert(x);
+                            T::var_data_mut(&mut self.vars[ret.0]).insert(x);
                         }
                     }
-                    for x in &T::var_data(&self.vars[var.0]).clone() {
-                        let x = self
-                            .monomorphize2(*x, level, var_cache, ty_cache_1, ty_cache_2, add_link);
-                        T::var_data_mut(&mut self.vars[ret.0]).insert(x);
-                    }
+                    *var = ret;
                 }
-                PolarType::Var(ret)
             }
-            PolarType::Func(neg, pos) => {
-                let neg = *neg;
-                let pos = *pos;
-                PolarType::Func(
-                    self.monomorphize2(neg, level, var_cache, ty_cache_2, ty_cache_1, add_link),
-                    self.monomorphize2(pos, level, var_cache, ty_cache_1, ty_cache_2, add_link),
-                )
-            }
-            PolarType::Record(x) => {
-                let mut rec = x.clone();
-                for v in rec.values_mut() {
-                    self.monomorphize2(*v, level, var_cache, ty_cache_1, ty_cache_2, add_link);
-                }
-                PolarType::Record(rec)
-            }
-            _ => return ty,
-        };
+        }
         let ret = self.add_ty(ty1, ty.span());
         ty_cache_1.insert(ty, ret);
         ret
     }
-    pub fn monomorphize(&mut self, pos: PosIdS, level: u16) -> PosIdS {
+    pub fn monomorphize<T: PolarPrimitive>(&mut self, ty: IdSpan<T>, level: u16) -> IdSpan<T> {
         self.monomorphize2(
-            pos,
+            ty,
             level,
             &mut HashMap::new(),
             &mut HashMap::new(),
