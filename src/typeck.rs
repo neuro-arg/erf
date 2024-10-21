@@ -97,6 +97,12 @@ pub type NegIdS = IdSpan<NegPrim>;
 pub type Pos = PolarType<PosPrim>;
 pub type Neg = PolarType<NegPrim>;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum AnyId {
+    Pos(PosIdS),
+    Neg(NegIdS),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct VarState {
     label: Option<String>,
@@ -269,7 +275,7 @@ impl TypeCk {
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
                     let neg = if self.vars[pos.0].level < self.level(neg0) {
-                        self.monomorphize_neg(
+                        self.monomorphize2(
                             neg,
                             self.vars[pos.0].level,
                             &mut HashMap::new(),
@@ -289,7 +295,7 @@ impl TypeCk {
                 (pos0, Neg::Var(neg)) => {
                     let neg = *neg;
                     let pos = if self.vars[neg.0].level < self.level(pos0) {
-                        self.monomorphize_pos(
+                        self.monomorphize2(
                             pos,
                             self.vars[neg.0].level,
                             &mut HashMap::new(),
@@ -320,75 +326,76 @@ impl TypeCk {
         }
         Ok(())
     }
-    fn monomorphize_pos(
+    fn monomorphize2<T: PolarPrimitive>(
         &mut self,
-        pos: PosIdS,
+        ty: IdSpan<T>,
         level: u16,
         var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
-        pos_cache: &mut HashMap<PosIdS, PosIdS>,
-        neg_cache: &mut HashMap<NegIdS, NegIdS>,
+        ty_cache_1: &mut HashMap<IdSpan<T>, IdSpan<T>>,
+        ty_cache_2: &mut HashMap<IdSpan<T::Inverse>, IdSpan<T::Inverse>>,
         add_link: bool,
-    ) -> PosIdS {
-        if let Some(entry) = pos_cache.get(&pos) {
+    ) -> IdSpan<T> {
+        if let Some(entry) = ty_cache_1.get(&ty) {
             return *entry;
         }
-        let pos1 = self.ty(pos.id());
-        let pos1 = match pos1 {
-            Pos::Var(var) => {
+        let ty1 = self.ty(ty.id());
+        let ty1 = match ty1 {
+            PolarType::Var(var) => {
                 let var = *var;
-                let (ret, pos_ok, neg_ok) = var_cache.entry(var).or_insert_with(|| {
+                let (ret, ok1, ok2) = var_cache.entry(var).or_insert_with(|| {
                     (
                         self.add_var(self.vars[var.0].label.clone(), level),
                         false,
                         false,
                     )
                 });
+                let (ok1, ok2) = if T::POSITIVE { (ok1, ok2) } else { (ok2, ok1) };
                 let ret = *ret;
-                if !*pos_ok {
-                    *pos_ok = true;
+                if !*ok1 {
+                    *ok1 = true;
                     if add_link {
-                        let neg = self.add_ty(Neg::Var(ret), pos.span());
-                        self.vars[var.0].inter.insert(neg);
+                        let neg = self.add_ty(PolarType::Var(ret), ty.span());
+                        T::Inverse::var_data_mut(&mut self.vars[var.0]).insert(neg);
                     } else {
-                        *neg_ok = true;
-                        for x in &self.vars[var.0].inter.clone() {
-                            let x = self.monomorphize_neg(
-                                *x, level, var_cache, pos_cache, neg_cache, add_link,
+                        *ok2 = true;
+                        for x in &T::Inverse::var_data(&self.vars[var.0]).clone() {
+                            let x = self.monomorphize2(
+                                *x, level, var_cache, ty_cache_2, ty_cache_1, add_link,
                             );
-                            self.vars[ret.0].inter.insert(x);
+                            T::Inverse::var_data_mut(&mut self.vars[var.0]).insert(x);
                         }
                     }
-                    for x in &self.vars[var.0].union.clone() {
+                    for x in &T::var_data(&self.vars[var.0]).clone() {
                         let x = self
-                            .monomorphize_pos(*x, level, var_cache, pos_cache, neg_cache, add_link);
-                        self.vars[ret.0].union.insert(x);
+                            .monomorphize2(*x, level, var_cache, ty_cache_1, ty_cache_2, add_link);
+                        T::var_data_mut(&mut self.vars[ret.0]).insert(x);
                     }
                 }
-                Pos::Var(ret)
+                PolarType::Var(ret)
             }
-            Pos::Func(neg, pos) => {
+            PolarType::Func(neg, pos) => {
                 let neg = *neg;
                 let pos = *pos;
-                Pos::Func(
-                    self.monomorphize_neg(neg, level, var_cache, pos_cache, neg_cache, add_link),
-                    self.monomorphize_pos(pos, level, var_cache, pos_cache, neg_cache, add_link),
+                PolarType::Func(
+                    self.monomorphize2(neg, level, var_cache, ty_cache_2, ty_cache_1, add_link),
+                    self.monomorphize2(pos, level, var_cache, ty_cache_1, ty_cache_2, add_link),
                 )
             }
-            Pos::Record(x) => {
+            PolarType::Record(x) => {
                 let mut rec = x.clone();
                 for v in rec.values_mut() {
-                    self.monomorphize_pos(*v, level, var_cache, pos_cache, neg_cache, add_link);
+                    self.monomorphize2(*v, level, var_cache, ty_cache_1, ty_cache_2, add_link);
                 }
-                Pos::Record(rec)
+                PolarType::Record(rec)
             }
-            _ => return pos,
+            _ => return ty,
         };
-        let ret = self.add_ty(pos1, pos.span());
-        pos_cache.insert(pos, ret);
+        let ret = self.add_ty(ty1, ty.span());
+        ty_cache_1.insert(ty, ret);
         ret
     }
     pub fn monomorphize(&mut self, pos: PosIdS, level: u16) -> PosIdS {
-        self.monomorphize_pos(
+        self.monomorphize2(
             pos,
             level,
             &mut HashMap::new(),
@@ -396,73 +403,6 @@ impl TypeCk {
             &mut HashMap::new(),
             false,
         )
-    }
-    fn monomorphize_neg(
-        &mut self,
-        neg: NegIdS,
-        level: u16,
-        var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
-        pos_cache: &mut HashMap<PosIdS, PosIdS>,
-        neg_cache: &mut HashMap<NegIdS, NegIdS>,
-        add_link: bool,
-    ) -> NegIdS {
-        if let Some(entry) = neg_cache.get(&neg) {
-            return *entry;
-        }
-        let neg1 = self.ty(neg.id());
-        let neg1 = match neg1 {
-            Neg::Var(var) => {
-                let var = *var;
-                let (ret, pos_ok, neg_ok) = var_cache.entry(var).or_insert_with(|| {
-                    (
-                        self.add_var(self.vars[var.0].label.clone(), level),
-                        false,
-                        false,
-                    )
-                });
-                let ret = *ret;
-                if !*neg_ok {
-                    *neg_ok = true;
-                    if add_link {
-                        let pos = self.add_ty(Pos::Var(ret), neg.span());
-                        self.vars[var.0].union.insert(pos);
-                    } else {
-                        *pos_ok = true;
-                        for x in &self.vars[var.0].union.clone() {
-                            let x = self.monomorphize_pos(
-                                *x, level, var_cache, pos_cache, neg_cache, add_link,
-                            );
-                            self.vars[ret.0].union.insert(x);
-                        }
-                    }
-                    for x in &self.vars[var.0].inter.clone() {
-                        let x = self
-                            .monomorphize_neg(*x, level, var_cache, pos_cache, neg_cache, add_link);
-                        self.vars[ret.0].inter.insert(x);
-                    }
-                }
-                Neg::Var(ret)
-            }
-            Neg::Func(pos, neg) => {
-                let pos = *pos;
-                let neg = *neg;
-                Neg::Func(
-                    self.monomorphize_pos(pos, level, var_cache, pos_cache, neg_cache, add_link),
-                    self.monomorphize_neg(neg, level, var_cache, pos_cache, neg_cache, add_link),
-                )
-            }
-            Neg::Record(x) => {
-                let mut rec = x.clone();
-                for v in rec.values_mut() {
-                    self.monomorphize_neg(*v, level, var_cache, pos_cache, neg_cache, add_link);
-                }
-                Neg::Record(rec)
-            }
-            _ => return neg,
-        };
-        let ret = self.add_ty(neg1, neg.span());
-        neg_cache.insert(neg, ret);
-        ret
     }
     fn gv_node_id<T: PolarPrimitive>(&self, p: Id<T>) -> String {
         match self.ty(p) {
