@@ -35,6 +35,27 @@ impl<T: Clone + Hash + Eq> OrderedSet<T> {
         });
         (x == self.vals.len() - 1, x)
     }
+    pub fn extend(&mut self, src: impl IntoIterator<Item = T>) {
+        for x in src.into_iter() {
+            self.insert(x);
+        }
+    }
+}
+
+impl<A: Clone + Hash + Eq> FromIterator<A> for OrderedSet<A> {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        let mut ret = Self::new();
+        ret.extend(iter);
+        ret
+    }
+}
+
+impl<T> IntoIterator for OrderedSet<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.vals.into_iter()
+    }
 }
 
 impl<'a, T> IntoIterator for &'a OrderedSet<T> {
@@ -194,11 +215,4 @@ impl<T> Debug for IdSpan<T> {
             .field(&self.1)
             .finish()
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum Either3<T, U, V> {
-    A(T),
-    B(U),
-    C(V),
 }

@@ -3,11 +3,11 @@ use std::{
     hash::Hash,
 };
 
-use polar::PolarPrimitive;
+use polar::{AnyIdMut, AnyIdRef, PolarPrimitive};
 
 use crate::{
     diag::{self, HumanType},
-    util::{Either3, Id, IdSpan, OrderedSet},
+    util::{Id, IdSpan, OrderedSet},
     Span,
 };
 
@@ -124,9 +124,9 @@ impl TypeCk {
     pub fn level<T: PolarPrimitive>(&self, ty: &PolarType<T>) -> u16 {
         ty.ids()
             .map(|id| match id {
-                Either3::A(x) => self.level(self.ty(x.id())),
-                Either3::B(x) => self.level(self.ty(x.id())),
-                Either3::C(x) => self.vars[x.0].level,
+                AnyIdRef::Same(x) => self.level(self.ty(x.id())),
+                AnyIdRef::Inverse(x) => self.level(self.ty(x.id())),
+                AnyIdRef::Var(x) => self.vars[x.0].level,
             })
             .max()
             .unwrap_or(0)
@@ -323,13 +323,13 @@ impl TypeCk {
         let mut ty1 = ty1.clone();
         for id in ty1.ids_mut() {
             match id {
-                Either3::A(x) => {
+                AnyIdMut::Same(x) => {
                     *x = self.change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
                 }
-                Either3::B(x) => {
+                AnyIdMut::Inverse(x) => {
                     *x = self.change_level(*x, level, var_cache, ty_cache_2, ty_cache_1, raise);
                 }
-                Either3::C(var) => {
+                AnyIdMut::Var(var) => {
                     let var1 = *var;
                     let (ret, ok1, ok2) = var_cache.entry(var1).or_insert_with(|| {
                         (

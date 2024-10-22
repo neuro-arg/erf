@@ -2,11 +2,25 @@
 use std::hash::Hash;
 
 use crate::{
-    util::{Either3, IdSpan, OrderedSet},
+    util::{IdSpan, OrderedSet},
     Span,
 };
 
 use super::{NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
+
+#[derive(Copy, Clone, Debug)]
+pub enum AnyIdRef<'a, T: PolarPrimitive> {
+    Same(&'a IdSpan<T>),
+    Inverse(&'a IdSpan<T::Inverse>),
+    Var(&'a VarId),
+}
+
+#[derive(Debug)]
+pub enum AnyIdMut<'a, T: PolarPrimitive> {
+    Same(&'a mut IdSpan<T>),
+    Inverse(&'a mut IdSpan<T::Inverse>),
+    Var(&'a mut VarId),
+}
 
 pub trait PolarPrimitive: Clone + Eq + Hash {
     type Inverse: PolarPrimitive<Inverse = Self>;
@@ -15,12 +29,8 @@ pub trait PolarPrimitive: Clone + Eq + Hash {
     fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>>;
     fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>>;
     fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>>;
-    fn ids(
-        &self,
-    ) -> impl '_ + Iterator<Item = Either3<&IdSpan<Self>, &IdSpan<Self::Inverse>, &VarId>>;
-    fn ids_mut(
-        &mut self,
-    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<Self>, &mut IdSpan<Self::Inverse>, &mut VarId>>;
+    fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>>;
+    fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>>;
 }
 
 impl PolarPrimitive for PosPrim {
@@ -38,15 +48,13 @@ impl PolarPrimitive for PosPrim {
     fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
         &var.union
     }
-    fn ids(
-        &self,
-    ) -> impl '_ + Iterator<Item = Either3<&IdSpan<Self>, &IdSpan<Self::Inverse>, &VarId>> {
+    fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
             Record(std::collections::btree_map::Values<'a, String, IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>;
+            type Item = AnyIdRef<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -56,7 +64,7 @@ impl PolarPrimitive for PosPrim {
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Record(x) => x.next().map(AnyIdRef::Same),
                 }
             }
         }
@@ -70,16 +78,13 @@ impl PolarPrimitive for PosPrim {
             | Self::FloatLiteral => Iter::Default,
         }
     }
-    fn ids_mut(
-        &mut self,
-    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<Self>, &mut IdSpan<Self::Inverse>, &mut VarId>>
-    {
+    fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
             Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>;
+            type Item = AnyIdMut<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -89,7 +94,7 @@ impl PolarPrimitive for PosPrim {
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Record(x) => x.next().map(AnyIdMut::Same),
                 }
             }
         }
@@ -120,15 +125,13 @@ impl PolarPrimitive for NegPrim {
     fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
         &var.inter
     }
-    fn ids(
-        &self,
-    ) -> impl '_ + Iterator<Item = Either3<&IdSpan<Self>, &IdSpan<Self::Inverse>, &VarId>> {
+    fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
             Record(std::option::IntoIter<&'a IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>;
+            type Item = AnyIdRef<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -138,7 +141,7 @@ impl PolarPrimitive for NegPrim {
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Record(x) => x.next().map(AnyIdRef::Same),
                 }
             }
         }
@@ -147,16 +150,13 @@ impl PolarPrimitive for NegPrim {
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => Iter::Default,
         }
     }
-    fn ids_mut(
-        &mut self,
-    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<Self>, &mut IdSpan<Self::Inverse>, &mut VarId>>
-    {
+    fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
             Record(std::option::IntoIter<&'a mut IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>;
+            type Item = AnyIdMut<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -166,7 +166,7 @@ impl PolarPrimitive for NegPrim {
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Record(x) => x.next().map(Either3::A),
+                    Self::Record(x) => x.next().map(AnyIdMut::Same),
                 }
             }
         }
@@ -178,27 +178,14 @@ impl PolarPrimitive for NegPrim {
 }
 
 impl<T: PolarPrimitive> PolarType<T> {
-    pub fn ids(
-        &self,
-    ) -> impl '_ + Iterator<Item = Either3<&IdSpan<T>, &IdSpan<T::Inverse>, &VarId>> {
-        enum Iter<
-            'a,
-            T: PolarPrimitive,
-            I: Iterator<Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>>,
-        > {
+    pub fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<T>> {
+        enum Iter<'a, T: PolarPrimitive, I: Iterator<Item = AnyIdRef<'a, T>>> {
             Var(std::option::IntoIter<&'a VarId>),
-            Func(
-                std::array::IntoIter<Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>, 2>,
-            ),
+            Func(std::array::IntoIter<AnyIdRef<'a, T>, 2>),
             Prim(I),
         }
-        impl<
-                'a,
-                T: PolarPrimitive,
-                I: Iterator<Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>>,
-            > Iterator for Iter<'a, T, I>
-        {
-            type Item = Either3<&'a IdSpan<T>, &'a IdSpan<T::Inverse>, &'a VarId>;
+        impl<'a, T: PolarPrimitive, I: Iterator<Item = AnyIdRef<'a, T>>> Iterator for Iter<'a, T, I> {
+            type Item = AnyIdRef<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Var(x) => x.size_hint(),
@@ -208,7 +195,7 @@ impl<T: PolarPrimitive> PolarType<T> {
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
-                    Self::Var(x) => x.next().map(Either3::C),
+                    Self::Var(x) => x.next().map(AnyIdRef::Var),
                     Self::Func(x) => x.next(),
                     Self::Prim(x) => x.next(),
                 }
@@ -217,36 +204,17 @@ impl<T: PolarPrimitive> PolarType<T> {
         match self {
             Self::Prim(x) => Iter::Prim(x.ids()),
             Self::Var(v) => Iter::Var(Some(v).into_iter()),
-            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
+            Self::Func(a, b) => Iter::Func([AnyIdRef::Inverse(a), AnyIdRef::Same(b)].into_iter()),
         }
     }
-    pub fn ids_mut(
-        &mut self,
-    ) -> impl '_ + Iterator<Item = Either3<&mut IdSpan<T>, &mut IdSpan<T::Inverse>, &mut VarId>>
-    {
-        enum Iter<
-            'a,
-            T: PolarPrimitive,
-            I: Iterator<Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>>,
-        > {
+    pub fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<T>> {
+        enum Iter<'a, T: PolarPrimitive, I: Iterator<Item = AnyIdMut<'a, T>>> {
             Var(std::option::IntoIter<&'a mut VarId>),
-            Func(
-                std::array::IntoIter<
-                    Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>,
-                    2,
-                >,
-            ),
+            Func(std::array::IntoIter<AnyIdMut<'a, T>, 2>),
             Prim(I),
         }
-        impl<
-                'a,
-                T: PolarPrimitive,
-                I: Iterator<
-                    Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>,
-                >,
-            > Iterator for Iter<'a, T, I>
-        {
-            type Item = Either3<&'a mut IdSpan<T>, &'a mut IdSpan<T::Inverse>, &'a mut VarId>;
+        impl<'a, T: PolarPrimitive, I: Iterator<Item = AnyIdMut<'a, T>>> Iterator for Iter<'a, T, I> {
+            type Item = AnyIdMut<'a, T>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Var(x) => x.size_hint(),
@@ -256,7 +224,7 @@ impl<T: PolarPrimitive> PolarType<T> {
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
-                    Self::Var(x) => x.next().map(Either3::C),
+                    Self::Var(x) => x.next().map(AnyIdMut::Var),
                     Self::Func(x) => x.next(),
                     Self::Prim(x) => x.next(),
                 }
@@ -265,7 +233,7 @@ impl<T: PolarPrimitive> PolarType<T> {
         match self {
             Self::Prim(x) => Iter::Prim(x.ids_mut()),
             Self::Var(v) => Iter::Var(Some(v).into_iter()),
-            Self::Func(a, b) => Iter::Func([Either3::B(a), Either3::A(b)].into_iter()),
+            Self::Func(a, b) => Iter::Func([AnyIdMut::Inverse(a), AnyIdMut::Same(b)].into_iter()),
         }
     }
 }
