@@ -1,13 +1,14 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     hash::Hash,
 };
 
+use indexmap::IndexMap;
 use polar::{AnyIdMut, AnyIdRef, PolarPrimitive};
 
 use crate::{
     diag::{self, HumanType},
-    util::{Id, IdSpan, OrderedSet},
+    util::{Id, IdSpan},
     Span,
 };
 
@@ -62,15 +63,19 @@ pub type NegIdS = IdSpan<NegPrim>;
 #[derive(Clone, Debug, Default)]
 pub struct VarState {
     label: Option<String>,
-    union: OrderedSet<PosIdS>,
-    inter: OrderedSet<NegIdS>,
+    union: IndexMap<PosIdS, Edge>,
+    inter: IndexMap<NegIdS, Edge>,
     level: u16,
+    /// If a var is a boundary, it doesn't pass any constraints through itself.
+    /// The only exception is the `Ordering` constraint, which it does pass.
+    boundary: bool,
 }
 
 #[derive(Debug, Default)]
 struct ConstraintGraph {
-    constraints: HashSet<(PosIdS, NegIdS)>,
-    queue: VecDeque<(PosIdS, NegIdS)>,
+    constraints: HashMap<(PosIdS, NegIdS), Edge>,
+    queue: VecDeque<(PosIdS, NegIdS, Flow)>,
+    queries: Vec<Query>,
 }
 
 #[derive(Debug, Default)]
@@ -84,18 +89,167 @@ pub struct TypeCk {
 }
 
 impl ConstraintGraph {
-    fn enqueue(&mut self, lhs: PosIdS, rhs: NegIdS) {
-        if self.constraints.insert((lhs, rhs)) {
-            self.queue.push_back((lhs, rhs));
+    fn enqueue(&mut self, lhs: PosIdS, rhs: NegIdS, flow: Flow) {
+        let mut visit_anyway = false;
+        let should_visit = self
+            .constraints
+            .entry((lhs, rhs))
+            .or_insert_with(|| {
+                visit_anyway = true;
+                Default::default()
+            })
+            .merge_flow(flow);
+        if should_visit || visit_anyway {
+            self.queue.push_back((lhs, rhs, flow));
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct QueryId(usize);
+
+/// Strong edges are used for mandatory constraints (i.e. check that the program is sound)
+///
+/// Weak edges are used for optional constraints that can be queried (i.e. are used for program
+/// analysis, which may affect compiler optimizations or even type flow)
+///
+/// If a weak edge exists, a strong edge can still be added, but if a strong edge exists, there's
+/// no point in adding a weak version of that exact edge
+///
+/// Everything is complicated by the fact there may exist some connections created by multiple weak
+/// edges. In that case, we simply mark the edge as "potentially possible", but only visit it at
+/// the end to make sure the other queries don't get invalidated by strict edges later.
+#[derive(Clone, Debug, Default)]
+pub enum Edge {
+    /// A no-op edge
+    #[default]
+    Default,
+    /// Weak edge, failure notifies a query.
+    Weak { queries: HashMap<QueryId, u32> },
+    /// Strong edge, failure to add = type error.
+    Strong,
+}
+
+impl Edge {
+    pub fn merge_flow(&mut self, flow: Flow) -> bool {
+        match (self, &flow) {
+            // if this is already a strong edge, ignore
+            (Edge::Strong, _) => false,
+            // if this a weak edge and we're adding a weak flow, merge them
+            (Edge::Weak { queries }, Flow::Query { query, generation }) => {
+                let mut new = false;
+                let old_gen = queries.entry(*query).or_insert_with(|| {
+                    new = true;
+                    0
+                });
+                // if this query is already there with a >= generation, ignore
+                // otherwise, visit
+                if *old_gen < *generation {
+                    new = true;
+                }
+                new
+            }
+            // if this is a strong flow but the edge is currently weak, forget about the queries;
+            // this is now a mandatory edge
+            (this @ Edge::Weak { .. }, Flow::Strong) => {
+                *this = Edge::Strong;
+                true
+            }
+            // if this is a no-op flow, ignore it in all cases
+            (_, Flow::Noop) => false,
+            // if there's no edge, add one
+            (this @ Edge::Default, _) => {
+                *this = match flow {
+                    Flow::Noop => return false,
+                    Flow::Strong => Edge::Strong,
+                    Flow::Query { query, generation } => {
+                        let mut queries = HashMap::new();
+                        queries.insert(query, generation);
+                        Edge::Weak { queries }
+                    }
+                };
+                true
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Query {
+    /// Delayed query with no immediate fail handlers
+    Delayed { success: bool },
+}
+
+impl Query {
+    /// The current flow generation of this query. Flows created with the old generation are
+    /// considered invalid.
+    pub fn generation(&self) -> u32 {
+        match self {
+            Self::Delayed { success } => {
+                if *success {
+                    0
+                } else {
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// A custom flow. Flow is some metadata that can be *added* to an edge. Multiple flows may be
+/// attached to an edge at the same time in ome cases. At the end of the typechecking process
+/// all edges are either removed or promoted to strong edges with the only flow being `Flow::Strong`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Flow {
+    /// The simplest flow that's only used for variable ordering. For simplicity's sake it can be
+    /// added to everything, not just variables.
+    Noop,
+    /// Query flow, calling custom code on failure
+    Query {
+        /// The query that spawned this flow
+        query: QueryId,
+        /// The flow generation (old generations are garbage collected over time)
+        generation: u32,
+    },
+    /// Strong flow, yielding a type error on failure
+    #[default]
+    Strong,
+}
+
+struct VarTypeCache<'a, T: PolarPrimitive> {
+    var_cache: &'a mut HashMap<VarId, (VarId, bool, bool)>,
+    ty_cache_1: &'a mut HashMap<IdSpan<T>, IdSpan<T>>,
+    ty_cache_2: &'a mut HashMap<IdSpan<T::Inverse>, IdSpan<T::Inverse>>,
+}
+
+impl<'a, T: PolarPrimitive> VarTypeCache<'a, T> {
+    fn invert(&mut self) -> VarTypeCache<'_, T::Inverse> {
+        VarTypeCache {
+            var_cache: self.var_cache,
+            ty_cache_1: self.ty_cache_2,
+            ty_cache_2: self.ty_cache_1,
         }
     }
 }
 
 impl TypeCk {
+    pub fn add_query(&mut self, query: Query) -> QueryId {
+        self.q.queries.push(query);
+        QueryId(self.q.queries.len() - 1)
+    }
     pub fn add_var(&mut self, label: Option<String>, level: u16) -> VarId {
         self.vars.push(VarState {
             label,
             level,
+            ..VarState::default()
+        });
+        VarId(self.vars.len() - 1)
+    }
+    pub fn add_boundary_var(&mut self, label: Option<String>, level: u16) -> VarId {
+        self.vars.push(VarState {
+            label,
+            level,
+            boundary: true,
             ..VarState::default()
         });
         VarId(self.vars.len() - 1)
@@ -110,7 +264,7 @@ impl TypeCk {
         &'a self,
         var: VarId,
     ) -> impl '_ + Iterator<Item = Id<T>> {
-        T::var_data(&self.vars[var.0]).into_iter().map(IdSpan::id)
+        T::var_data(&self.vars[var.0]).keys().map(IdSpan::id)
     }
     pub fn ty<T: PolarPrimitive>(&self, id: Id<T>) -> &PolarType<T> {
         &T::typeck_data(self)[id.id()]
@@ -131,11 +285,11 @@ impl TypeCk {
             .max()
             .unwrap_or(0)
     }
-    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS) -> Result<(), diag::TypeError> {
+    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS, flow: Flow) -> Result<(), diag::TypeError> {
         // reuse queue buffer, but clear it every time
         self.q.queue.clear();
-        self.q.enqueue(pos, neg);
-        while let Some((pos, neg)) = self.q.queue.pop_front() {
+        self.q.enqueue(pos, neg, flow);
+        while let Some((pos, neg, flow)) = self.q.queue.pop_front() {
             match (&self.pos[pos.id().id()], &self.neg[neg.id().id()]) {
                 (Pos::Prim(PosPrim::Void), Neg::Prim(NegPrim::Void)) => {}
                 (Pos::Prim(PosPrim::Bool), Neg::Prim(NegPrim::Bool)) => {}
@@ -151,14 +305,16 @@ impl TypeCk {
                 ) => {
                     if s1 != s2 || b1 != b2 {
                         // coercion not implemented
-                        return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id()),
-                            HumanType::from_neg(self, neg.id()),
-                        )
-                        .with_hint(diag::TypeHint::NoCoercion {
-                            value: pos.span(),
-                            used: neg.span(),
-                        }));
+                        self.fail_flow(flow, |this| {
+                            diag::TypeError::new(
+                                HumanType::from_pos(this, pos.id()),
+                                HumanType::from_neg(this, neg.id()),
+                            )
+                            .with_hint(diag::TypeHint::NoCoercion {
+                                value: pos.span(),
+                                used: neg.span(),
+                            })
+                        })?;
                     }
                 }
                 (
@@ -167,14 +323,16 @@ impl TypeCk {
                 ) => {
                     if b1 != b2 {
                         // coercion not implemented
-                        return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id()),
-                            HumanType::from_neg(self, neg.id()),
-                        )
-                        .with_hint(diag::TypeHint::NoCoercion {
-                            value: pos.span(),
-                            used: neg.span(),
-                        }));
+                        self.fail_flow(flow, |this| {
+                            diag::TypeError::new(
+                                HumanType::from_pos(this, pos.id()),
+                                HumanType::from_neg(this, neg.id()),
+                            )
+                            .with_hint(diag::TypeHint::NoCoercion {
+                                value: pos.span(),
+                                used: neg.span(),
+                            })
+                        })?;
                     }
                 }
                 (Pos::Prim(PosPrim::IntLiteral { .. }), Neg::Prim(NegPrim::Float { .. })) => {}
@@ -190,37 +348,42 @@ impl TypeCk {
                     }),
                 ) => {
                     if (s1 != s2 || b1 > b2) && (!s2 || *s1 || b1 >= b2) {
-                        return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos.id()),
-                            HumanType::from_neg(self, neg.id()),
-                        )
-                        .with_hint(diag::TypeHint::NoCoercion {
-                            value: pos.span(),
-                            used: neg.span(),
-                        }));
+                        self.fail_flow(flow, |this| {
+                            diag::TypeError::new(
+                                HumanType::from_pos(this, pos.id()),
+                                HumanType::from_neg(this, neg.id()),
+                            )
+                            .with_hint(diag::TypeHint::NoCoercion {
+                                value: pos.span(),
+                                used: neg.span(),
+                            })
+                        })?;
                     }
                 }
-                (Pos::Prim(PosPrim::Record(pos1)), Neg::Prim(NegPrim::Record(k, neg))) => {
-                    let (mut pos, pos1) = (pos1.iter(), pos);
-                    if let Some((_, pos)) = pos.find(|x| x.0 == k) {
-                        self.q.enqueue(*pos, *neg);
+                (Pos::Prim(PosPrim::Record(pos0)), Neg::Prim(NegPrim::Record(k, neg))) => {
+                    if let Some((_, pos)) = pos0.iter().find(|x| x.0 == k) {
+                        self.q.enqueue(*pos, *neg, flow);
                     } else {
+                        let field = k.clone();
+                        let neg = *neg;
                         // missing field
-                        return Err(diag::TypeError::new(
-                            HumanType::from_pos(self, pos1.id()),
-                            HumanType::from_neg(self, neg.id()),
-                        )
-                        .with_hint(diag::TypeHint::MissingField {
-                            field: k.clone(),
-                            used: neg.span(),
-                        }));
+                        self.fail_flow(flow, |this| {
+                            diag::TypeError::new(
+                                HumanType::from_pos(this, pos.id()),
+                                HumanType::from_neg(this, neg.id()),
+                            )
+                            .with_hint(diag::TypeHint::MissingField {
+                                field,
+                                used: neg.span(),
+                            })
+                        })?;
                     }
                 }
                 (Pos::Func(pos_a, pos_b), Neg::Func(neg_a, neg_b)) => {
                     // ensure function of type pos_a -> pos_b can consume values of type neg_a
-                    self.q.enqueue(*neg_a, *pos_a);
+                    self.q.enqueue(*neg_a, *pos_a, flow);
                     // ensure function of type pos_a -> pos_b produces values of type neg_b
-                    self.q.enqueue(*pos_b, *neg_b);
+                    self.q.enqueue(*pos_b, *neg_b, flow);
                 }
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
@@ -228,17 +391,30 @@ impl TypeCk {
                         self.change_level(
                             neg,
                             self.vars[pos.0].level,
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
+                            &mut VarTypeCache {
+                                var_cache: &mut HashMap::new(),
+                                ty_cache_1: &mut HashMap::new(),
+                                ty_cache_2: &mut HashMap::new(),
+                            },
                             true,
+                            flow,
                         )
                     } else {
                         neg
                     };
-                    if self.vars[pos.0].inter.insert(neg).0 {
-                        for x in &self.vars[pos.0].union {
-                            self.q.enqueue(*x, neg);
+                    if self.vars[pos.0]
+                        .inter
+                        .entry(neg)
+                        .or_default()
+                        .merge_flow(flow)
+                    {
+                        let flow = if self.vars[pos.0].boundary {
+                            Flow::Noop
+                        } else {
+                            flow
+                        };
+                        for x in self.vars[pos.0].union.keys() {
+                            self.q.enqueue(*x, neg, flow);
                         }
                     }
                 }
@@ -248,33 +424,75 @@ impl TypeCk {
                         self.change_level(
                             pos,
                             self.vars[neg.0].level,
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
+                            &mut VarTypeCache {
+                                var_cache: &mut HashMap::new(),
+                                ty_cache_1: &mut HashMap::new(),
+                                ty_cache_2: &mut HashMap::new(),
+                            },
                             true,
+                            flow,
                         )
                     } else {
                         pos
                     };
-                    if self.vars[neg.0].union.insert(pos).0 {
-                        for y in &self.vars[neg.0].inter {
-                            self.q.enqueue(pos, *y);
+                    if self.vars[neg.0]
+                        .union
+                        .entry(pos)
+                        .or_default()
+                        .merge_flow(flow)
+                    {
+                        let flow = if self.vars[neg.0].boundary {
+                            Flow::Noop
+                        } else {
+                            flow
+                        };
+                        for y in self.vars[neg.0].inter.keys() {
+                            self.q.enqueue(pos, *y, flow);
                         }
                     }
                 }
                 (_, _) => {
-                    return Err(diag::TypeError::new(
-                        HumanType::from_pos(self, pos.id()),
-                        HumanType::from_neg(self, neg.id()),
-                    )
-                    .with_hint(diag::TypeHint::NoCoercion {
-                        value: pos.span(),
-                        used: neg.span(),
-                    }));
+                    self.fail_flow(flow, |this| {
+                        diag::TypeError::new(
+                            HumanType::from_pos(this, pos.id()),
+                            HumanType::from_neg(this, neg.id()),
+                        )
+                        .with_hint(diag::TypeHint::NoCoercion {
+                            value: pos.span(),
+                            used: neg.span(),
+                        })
+                    })?;
                 }
             }
         }
         Ok(())
+    }
+    /// Return an error returned by `ret` if `flow` is `Flow::Strong`,
+    /// otherwise run the applicable processing rules
+    fn fail_flow(
+        &mut self,
+        flow: Flow,
+        ret: impl FnOnce(&mut Self) -> diag::TypeError,
+    ) -> Result<(), diag::TypeError> {
+        match flow {
+            Flow::Noop => Ok(()),
+            Flow::Query { query, generation }
+                if self.q.queries[query.0].generation() == generation =>
+            {
+                self.fail_query(query)
+            }
+            Flow::Strong | Flow::Query { .. } => Err(ret(self)),
+        }
+    }
+    /// This is called as part of `flow`. Fail the query, potentially refreshing the generation and
+    /// creating new flows.
+    fn fail_query(&mut self, query: QueryId) -> Result<(), diag::TypeError> {
+        match &mut self.q.queries[query.0] {
+            Query::Delayed { success } => {
+                *success = false;
+                Ok(())
+            }
+        }
     }
     /// This is a function used for let polymorphism. Each time the let binding is used, it may
     /// have different types - for example, an identity function may have the type `bool -> bool`
@@ -311,12 +529,11 @@ impl TypeCk {
         &mut self,
         ty: IdSpan<T>,
         level: u16,
-        var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
-        ty_cache_1: &mut HashMap<IdSpan<T>, IdSpan<T>>,
-        ty_cache_2: &mut HashMap<IdSpan<T::Inverse>, IdSpan<T::Inverse>>,
+        cache: &mut VarTypeCache<T>,
         raise: bool,
+        flow: Flow,
     ) -> IdSpan<T> {
-        if let Some(entry) = ty_cache_1.get(&ty) {
+        if let Some(entry) = cache.ty_cache_1.get(&ty) {
             return *entry;
         }
         let ty1 = self.ty(ty.id());
@@ -324,14 +541,14 @@ impl TypeCk {
         for id in ty1.ids_mut() {
             match id {
                 AnyIdMut::Same(x) => {
-                    *x = self.change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
+                    *x = self.change_level(*x, level, cache, raise, flow);
                 }
                 AnyIdMut::Inverse(x) => {
-                    *x = self.change_level(*x, level, var_cache, ty_cache_2, ty_cache_1, raise);
+                    *x = self.change_level(*x, level, &mut cache.invert(), raise, flow);
                 }
                 AnyIdMut::Var(var) => {
                     let var1 = *var;
-                    let (ret, ok1, ok2) = var_cache.entry(var1).or_insert_with(|| {
+                    let (ret, ok1, ok2) = cache.var_cache.entry(var1).or_insert_with(|| {
                         (
                             self.add_var(self.vars[var1.0].label.clone(), level),
                             false,
@@ -344,20 +561,35 @@ impl TypeCk {
                         *ok1 = true;
                         if raise {
                             let neg = self.add_ty(PolarType::Var(ret), ty.span());
-                            T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(neg);
+                            T::Inverse::var_data_mut(&mut self.vars[var1.0])
+                                .entry(neg)
+                                .or_default()
+                                .merge_flow(flow);
                         } else {
                             *ok2 = true;
-                            for x in &T::Inverse::var_data(&self.vars[var1.0]).clone() {
-                                let x = self.change_level(
-                                    *x, level, var_cache, ty_cache_2, ty_cache_1, raise,
-                                );
-                                T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(x);
+                            for x in T::Inverse::var_data(&self.vars[var1.0])
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                            {
+                                let x =
+                                    self.change_level(x, level, &mut cache.invert(), raise, flow);
+                                T::Inverse::var_data_mut(&mut self.vars[var1.0])
+                                    .entry(x)
+                                    .or_default()
+                                    .merge_flow(flow);
                             }
                         }
-                        for x in &T::var_data(&self.vars[var1.0]).clone() {
-                            let x = self
-                                .change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
-                            T::var_data_mut(&mut self.vars[ret.0]).insert(x);
+                        for x in T::var_data(&self.vars[var1.0])
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                        {
+                            let x = self.change_level(x, level, cache, raise, flow);
+                            T::var_data_mut(&mut self.vars[ret.0])
+                                .entry(x)
+                                .or_default()
+                                .merge_flow(flow);
                         }
                     }
                     *var = ret;
@@ -365,17 +597,20 @@ impl TypeCk {
             }
         }
         let ret = self.add_ty(ty1, ty.span());
-        ty_cache_1.insert(ty, ret);
+        cache.ty_cache_1.insert(ty, ret);
         ret
     }
     pub fn monomorphize<T: PolarPrimitive>(&mut self, ty: IdSpan<T>, level: u16) -> IdSpan<T> {
         self.change_level(
             ty,
             level,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut VarTypeCache {
+                var_cache: &mut HashMap::new(),
+                ty_cache_1: &mut HashMap::new(),
+                ty_cache_2: &mut HashMap::new(),
+            },
             false,
+            Flow::Strong,
         )
     }
     fn gv_node_id<T: PolarPrimitive>(&self, p: Id<T>) -> String {
@@ -419,7 +654,7 @@ impl TypeCk {
             let label = id(&format!("{:?}", var));
             ret.push(format!("  {neg} -> {pos}[info={label}]"));
         }
-        for (pos, neg) in &self.q.constraints {
+        for (pos, neg) in self.q.constraints.keys() {
             let pos = id(&self.gv_node_id(pos.id()));
             let neg = id(&self.gv_node_id(neg.id()));
             ret.push(format!("  {pos} -> {neg} [color=red]"));

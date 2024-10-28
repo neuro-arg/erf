@@ -3,13 +3,13 @@
 
 use std::{collections::HashMap, str::FromStr};
 
+use indexmap::IndexMap;
 use malachite::num::logic::traits::SignificantBits;
 
 use crate::{
     ast::{self, LetPattern},
     diag,
     typeck::{Neg, Pos, PosIdS, PosPrim, TypeCk, VarId},
-    util::OrderedMap,
 };
 
 // VarId technically comes from the type checker,
@@ -164,7 +164,7 @@ impl Bindings {
 
 #[derive(Debug, Default)]
 pub struct Scope {
-    pub map: OrderedMap<VarId, Term>,
+    pub map: IndexMap<VarId, Term>,
 }
 
 impl Scope {
@@ -211,7 +211,7 @@ impl Ctx {
                     for (var, var_inp, expr1) in exprs {
                         let expr1 = self.lower_expr(bindings, *expr1, level + 1)?;
                         // now direct expr1 to var_inp (assignment)
-                        self.ck.flow(expr1.ty, var_inp)?;
+                        self.ck.flow(expr1.ty, var_inp, Default::default())?;
                         // and actually bind this variable
                         vars.push((var, expr1));
                     }
@@ -270,7 +270,7 @@ impl Ctx {
                         let func_inp = Neg::Func(arg.ty, ret_inp);
                         // the func's span is, well, the func's span
                         let func_inp = self.ck.add_ty(func_inp, func_span);
-                        self.ck.flow(func.ty, func_inp)?;
+                        self.ck.flow(func.ty, func_inp, Default::default())?;
                         Ok(Term {
                             inner: TermInner::Application(Box::new(func), Box::new(arg)),
                             ty: ret_out,
@@ -383,7 +383,7 @@ impl Ctx {
         for (var, var_inp, expr1) in exprs {
             let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?;
             // now direct expr1 to var_inp (assignment)
-            self.ck.flow(expr1.ty, var_inp)?;
+            self.ck.flow(expr1.ty, var_inp, Default::default())?;
             // and actually bind this variable
             ret1.insert(var, expr1);
             // vars.0.push((var, expr1));
