@@ -1,10 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     hash::Hash,
+    num::NonZeroU32,
 };
 
 use indexmap::IndexMap;
-use polar::{AnyIdMut, AnyIdRef, PolarPrimitive};
+use polar::{AnyId, AnyIdMut, AnyIdRef, PolarPrimitive};
 
 use crate::{
     diag::{self, HumanType},
@@ -74,7 +75,7 @@ pub struct VarState {
 #[derive(Debug, Default)]
 struct ConstraintGraph {
     constraints: HashMap<(PosIdS, NegIdS), Edge>,
-    queue: VecDeque<(PosIdS, NegIdS, Flow)>,
+    queue: VecDeque<(PosIdS, NegIdS, Edge)>,
     queries: Vec<Query>,
 }
 
@@ -89,18 +90,18 @@ pub struct TypeCk {
 }
 
 impl ConstraintGraph {
-    fn enqueue(&mut self, lhs: PosIdS, rhs: NegIdS, flow: Flow) {
+    fn enqueue(&mut self, lhs: PosIdS, rhs: NegIdS, edge: Edge) {
         let mut visit_anyway = false;
         let should_visit = self
             .constraints
             .entry((lhs, rhs))
             .or_insert_with(|| {
                 visit_anyway = true;
-                Default::default()
+                Edge::Noop
             })
-            .merge_flow(flow);
+            .merge(edge.clone());
         if should_visit || visit_anyway {
-            self.queue.push_back((lhs, rhs, flow));
+            self.queue.push_back((lhs, rhs, edge));
         }
     }
 }
@@ -119,11 +120,10 @@ pub struct QueryId(usize);
 /// Everything is complicated by the fact there may exist some connections created by multiple weak
 /// edges. In that case, we simply mark the edge as "potentially possible", but only visit it at
 /// the end to make sure the other queries don't get invalidated by strict edges later.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub enum Edge {
     /// A no-op edge
-    #[default]
-    Default,
+    Noop,
     /// Weak edge, failure notifies a query.
     Weak { queries: HashMap<QueryId, u32> },
     /// Strong edge, failure to add = type error.
@@ -131,43 +131,36 @@ pub enum Edge {
 }
 
 impl Edge {
-    pub fn merge_flow(&mut self, flow: Flow) -> bool {
-        match (self, &flow) {
+    pub fn merge(&mut self, rhs: Edge) -> bool {
+        match (self, &rhs) {
             // if this is already a strong edge, ignore
             (Edge::Strong, _) => false,
-            // if this a weak edge and we're adding a weak flow, merge them
-            (Edge::Weak { queries }, Flow::Query { query, generation }) => {
+            // if this a weak edge and we're adding a weak edge, merge them
+            (Edge::Weak { queries }, Edge::Weak { queries: q2 }) => {
                 let mut new = false;
-                let old_gen = queries.entry(*query).or_insert_with(|| {
-                    new = true;
-                    0
-                });
-                // if this query is already there with a >= generation, ignore
-                // otherwise, visit
-                if *old_gen < *generation {
-                    new = true;
+                for (query, generation) in q2 {
+                    let old_gen = queries.entry(*query).or_insert_with(|| {
+                        new = true;
+                        0
+                    });
+                    // if this query is already there with a >= generation, ignore
+                    // otherwise, visit
+                    if *old_gen < *generation {
+                        new = true;
+                    }
                 }
                 new
             }
-            // if this is a strong flow but the edge is currently weak, forget about the queries;
-            // this is now a mandatory edge
-            (this @ Edge::Weak { .. }, Flow::Strong) => {
+            // if the edge is currently weak and we want it to be strong, so be it
+            (this @ Edge::Weak { .. }, Edge::Strong) => {
                 *this = Edge::Strong;
                 true
             }
-            // if this is a no-op flow, ignore it in all cases
-            (_, Flow::Noop) => false,
-            // if there's no edge, add one
-            (this @ Edge::Default, _) => {
-                *this = match flow {
-                    Flow::Noop => return false,
-                    Flow::Strong => Edge::Strong,
-                    Flow::Query { query, generation } => {
-                        let mut queries = HashMap::new();
-                        queries.insert(query, generation);
-                        Edge::Weak { queries }
-                    }
-                };
+            // if we want to merge in a no-op edge, nothing has to be done
+            (_, Edge::Noop) => false,
+            // if this is a no-op currently, change that
+            (this @ Edge::Noop, _) => {
+                *this = rhs;
                 true
             }
         }
@@ -183,37 +176,17 @@ pub enum Query {
 impl Query {
     /// The current flow generation of this query. Flows created with the old generation are
     /// considered invalid.
-    pub fn generation(&self) -> u32 {
+    pub fn generation(&self) -> NonZeroU32 {
         match self {
             Self::Delayed { success } => {
                 if *success {
-                    0
+                    1.try_into().unwrap()
                 } else {
-                    1
+                    2.try_into().unwrap()
                 }
             }
         }
     }
-}
-
-/// A custom flow. Flow is some metadata that can be *added* to an edge. Multiple flows may be
-/// attached to an edge at the same time in ome cases. At the end of the typechecking process
-/// all edges are either removed or promoted to strong edges with the only flow being `Flow::Strong`.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Flow {
-    /// The simplest flow that's only used for variable ordering. For simplicity's sake it can be
-    /// added to everything, not just variables.
-    Noop,
-    /// Query flow, calling custom code on failure
-    Query {
-        /// The query that spawned this flow
-        query: QueryId,
-        /// The flow generation (old generations are garbage collected over time)
-        generation: u32,
-    },
-    /// Strong flow, yielding a type error on failure
-    #[default]
-    Strong,
 }
 
 struct VarTypeCache<'a, T: PolarPrimitive> {
@@ -249,7 +222,7 @@ impl TypeCk {
         self.vars.push(VarState {
             label,
             level,
-            boundary: true,
+            // boundary: true,
             ..VarState::default()
         });
         VarId(self.vars.len() - 1)
@@ -285,11 +258,113 @@ impl TypeCk {
             .max()
             .unwrap_or(0)
     }
-    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS, flow: Flow) -> Result<(), diag::TypeError> {
+    /// Remove a boundary from the var
+    fn unblock_var(&mut self, var: VarId, var_span: Span) -> Result<(), diag::TypeError> {
+        assert!(self.vars[var.0].boundary);
+        let mut union = IndexMap::new();
+        let mut inter = IndexMap::new();
+        std::mem::swap(&mut union, &mut self.vars[var.0].union);
+        std::mem::swap(&mut inter, &mut self.vars[var.0].inter);
+        self.vars[var.0].boundary = false;
+        let (var_pos, var_neg) = var.polarize(self, var_span);
+        for (pos, edge) in union {
+            if !matches!(edge, Edge::Noop) {
+                self.flow(pos, var_neg, edge.clone())?;
+            }
+        }
+        for (neg, edge) in inter {
+            if !matches!(edge, Edge::Noop) {
+                self.flow(var_pos, neg, edge.clone())?;
+            }
+        }
+        Ok(())
+    }
+    /// Post-processing (should be done after all the types have been added)
+    /// This removes all var boundaries, letting types flow freely
+    pub fn postproc(&mut self) -> Result<(), diag::TypeError> {
+        let mut stack = Vec::new();
+        let mut var_vis = vec![false; self.vars.len()];
+        let mut pos_vis = vec![false; self.pos.len()];
+        enum StackElem {
+            Visit(PosIdS),
+            Unblock(VarId, Span),
+        }
+        // visit everything in the stack and all unvisited preceding flows
+        let dfs = |stack: &mut Vec<StackElem>,
+                   var_vis: &mut Vec<bool>,
+                   pos_vis: &mut Vec<bool>,
+                   this: &mut Self|
+         -> Result<(), diag::TypeError> {
+            while let Some(elem) = stack.pop() {
+                let pos_id = match elem {
+                    StackElem::Visit(x) => x,
+                    StackElem::Unblock(var, span) => {
+                        this.unblock_var(var, span)?;
+                        continue;
+                    }
+                };
+                for id in this.pos[pos_id.id().id()]
+                    .ids()
+                    .map(|x| x.into_owned())
+                    .collect::<Vec<_>>()
+                {
+                    // Invariant: if AnyId::Var is returned, nothing else must be returned.
+                    // Otherwise the stack might get messed up, as all preceding nodes must be
+                    // visited before the var. Also, `pos_id.span()` is assumed to be the var's
+                    // span, so if that's not the case, we have issues.
+                    match id {
+                        AnyId::Var(var) => {
+                            if var_vis[var.0] {
+                                continue;
+                            }
+                            var_vis[var.0] = true;
+                            if this.vars[var.0].boundary {
+                                stack.push(StackElem::Unblock(var, pos_id.span()));
+                            }
+                            for id in this.vars[var.0].union.keys() {
+                                if pos_vis[id.id().id()] {
+                                    continue;
+                                }
+                                pos_vis[id.id().id()] = true;
+                                stack.push(StackElem::Visit(*id));
+                            }
+                        }
+                        AnyId::Same(p) => {
+                            if pos_vis[p.id().id()] {
+                                continue;
+                            }
+                            pos_vis[p.id().id()] = true;
+                            stack.push(StackElem::Visit(p));
+                        }
+                        AnyId::Inverse(_) => {}
+                    }
+                }
+            }
+            Ok(())
+        };
+        for id in 0..self.pos.len() {
+            if !pos_vis[id] {
+                pos_vis[id] = true;
+                stack.push(StackElem::Visit(PosIdS::new(
+                    PosId::new(id),
+                    self.pos_spans[id],
+                )));
+            }
+            dfs(&mut stack, &mut var_vis, &mut pos_vis, self)?;
+        }
+        for id in 0..self.pos.len() {
+            match self.pos[id] {
+                Pos::Var(v) if self.vars[v.0].boundary => {}
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS, edge: Edge) -> Result<(), diag::TypeError> {
         // reuse queue buffer, but clear it every time
         self.q.queue.clear();
-        self.q.enqueue(pos, neg, flow);
-        while let Some((pos, neg, flow)) = self.q.queue.pop_front() {
+        self.q.enqueue(pos, neg, edge);
+        while let Some((pos, neg, edge)) = self.q.queue.pop_front() {
             match (&self.pos[pos.id().id()], &self.neg[neg.id().id()]) {
                 (Pos::Prim(PosPrim::Void), Neg::Prim(NegPrim::Void)) => {}
                 (Pos::Prim(PosPrim::Bool), Neg::Prim(NegPrim::Bool)) => {}
@@ -305,7 +380,7 @@ impl TypeCk {
                 ) => {
                     if s1 != s2 || b1 != b2 {
                         // coercion not implemented
-                        self.fail_flow(flow, |this| {
+                        self.fail_edge(edge, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -323,7 +398,7 @@ impl TypeCk {
                 ) => {
                     if b1 != b2 {
                         // coercion not implemented
-                        self.fail_flow(flow, |this| {
+                        self.fail_edge(edge, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -348,7 +423,7 @@ impl TypeCk {
                     }),
                 ) => {
                     if (s1 != s2 || b1 > b2) && (!s2 || *s1 || b1 >= b2) {
-                        self.fail_flow(flow, |this| {
+                        self.fail_edge(edge, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -362,12 +437,12 @@ impl TypeCk {
                 }
                 (Pos::Prim(PosPrim::Record(pos0)), Neg::Prim(NegPrim::Record(k, neg))) => {
                     if let Some((_, pos)) = pos0.iter().find(|x| x.0 == k) {
-                        self.q.enqueue(*pos, *neg, flow);
+                        self.q.enqueue(*pos, *neg, edge);
                     } else {
                         let field = k.clone();
                         let neg = *neg;
                         // missing field
-                        self.fail_flow(flow, |this| {
+                        self.fail_edge(edge, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -381,9 +456,9 @@ impl TypeCk {
                 }
                 (Pos::Func(pos_a, pos_b), Neg::Func(neg_a, neg_b)) => {
                     // ensure function of type pos_a -> pos_b can consume values of type neg_a
-                    self.q.enqueue(*neg_a, *pos_a, flow);
+                    self.q.enqueue(*neg_a, *pos_a, edge.clone());
                     // ensure function of type pos_a -> pos_b produces values of type neg_b
-                    self.q.enqueue(*pos_b, *neg_b, flow);
+                    self.q.enqueue(*pos_b, *neg_b, edge);
                 }
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
@@ -397,7 +472,7 @@ impl TypeCk {
                                 ty_cache_2: &mut HashMap::new(),
                             },
                             true,
-                            flow,
+                            &edge,
                         )
                     } else {
                         neg
@@ -405,16 +480,16 @@ impl TypeCk {
                     if self.vars[pos.0]
                         .inter
                         .entry(neg)
-                        .or_default()
-                        .merge_flow(flow)
+                        .or_insert_with(|| Edge::Noop)
+                        .merge(edge.clone())
                     {
-                        let flow = if self.vars[pos.0].boundary {
-                            Flow::Noop
+                        let edge = if self.vars[pos.0].boundary {
+                            Edge::Noop
                         } else {
-                            flow
+                            edge
                         };
                         for x in self.vars[pos.0].union.keys() {
-                            self.q.enqueue(*x, neg, flow);
+                            self.q.enqueue(*x, neg, edge.clone());
                         }
                     }
                 }
@@ -430,7 +505,7 @@ impl TypeCk {
                                 ty_cache_2: &mut HashMap::new(),
                             },
                             true,
-                            flow,
+                            &edge,
                         )
                     } else {
                         pos
@@ -438,21 +513,21 @@ impl TypeCk {
                     if self.vars[neg.0]
                         .union
                         .entry(pos)
-                        .or_default()
-                        .merge_flow(flow)
+                        .or_insert_with(|| Edge::Noop)
+                        .merge(edge.clone())
                     {
-                        let flow = if self.vars[neg.0].boundary {
-                            Flow::Noop
+                        let edge = if self.vars[neg.0].boundary {
+                            Edge::Noop
                         } else {
-                            flow
+                            edge
                         };
                         for y in self.vars[neg.0].inter.keys() {
-                            self.q.enqueue(pos, *y, flow);
+                            self.q.enqueue(pos, *y, edge.clone());
                         }
                     }
                 }
                 (_, _) => {
-                    self.fail_flow(flow, |this| {
+                    self.fail_edge(edge, |this| {
                         diag::TypeError::new(
                             HumanType::from_pos(this, pos.id()),
                             HumanType::from_neg(this, neg.id()),
@@ -467,24 +542,27 @@ impl TypeCk {
         }
         Ok(())
     }
-    /// Return an error returned by `ret` if `flow` is `Flow::Strong`,
+    /// Return an error returned by `ret` if `edge` is `Edge::Strong`,
     /// otherwise run the applicable processing rules
-    fn fail_flow(
+    fn fail_edge(
         &mut self,
-        flow: Flow,
+        edge: Edge,
         ret: impl FnOnce(&mut Self) -> diag::TypeError,
     ) -> Result<(), diag::TypeError> {
-        match flow {
-            Flow::Noop => Ok(()),
-            Flow::Query { query, generation }
-                if self.q.queries[query.0].generation() == generation =>
-            {
-                self.fail_query(query)
+        match edge {
+            Edge::Noop => Ok(()),
+            Edge::Weak { queries } => {
+                for (query, generation) in &queries {
+                    if self.q.queries[query.0].generation().get() == *generation {
+                        self.fail_query(*query)?;
+                    }
+                }
+                Ok(())
             }
-            Flow::Strong | Flow::Query { .. } => Err(ret(self)),
+            Edge::Strong => Err(ret(self)),
         }
     }
-    /// This is called as part of `flow`. Fail the query, potentially refreshing the generation and
+    /// This is called as part of `edge`. Fail the query, potentially refreshing the generation and
     /// creating new flows.
     fn fail_query(&mut self, query: QueryId) -> Result<(), diag::TypeError> {
         match &mut self.q.queries[query.0] {
@@ -531,7 +609,7 @@ impl TypeCk {
         level: u16,
         cache: &mut VarTypeCache<T>,
         raise: bool,
-        flow: Flow,
+        edge: &Edge,
     ) -> IdSpan<T> {
         if let Some(entry) = cache.ty_cache_1.get(&ty) {
             return *entry;
@@ -541,10 +619,10 @@ impl TypeCk {
         for id in ty1.ids_mut() {
             match id {
                 AnyIdMut::Same(x) => {
-                    *x = self.change_level(*x, level, cache, raise, flow);
+                    *x = self.change_level(*x, level, cache, raise, edge);
                 }
                 AnyIdMut::Inverse(x) => {
-                    *x = self.change_level(*x, level, &mut cache.invert(), raise, flow);
+                    *x = self.change_level(*x, level, &mut cache.invert(), raise, edge);
                 }
                 AnyIdMut::Var(var) => {
                     let var1 = *var;
@@ -563,8 +641,8 @@ impl TypeCk {
                             let neg = self.add_ty(PolarType::Var(ret), ty.span());
                             T::Inverse::var_data_mut(&mut self.vars[var1.0])
                                 .entry(neg)
-                                .or_default()
-                                .merge_flow(flow);
+                                .or_insert_with(|| Edge::Noop)
+                                .merge(edge.clone());
                         } else {
                             *ok2 = true;
                             for x in T::Inverse::var_data(&self.vars[var1.0])
@@ -573,11 +651,11 @@ impl TypeCk {
                                 .collect::<Vec<_>>()
                             {
                                 let x =
-                                    self.change_level(x, level, &mut cache.invert(), raise, flow);
+                                    self.change_level(x, level, &mut cache.invert(), raise, edge);
                                 T::Inverse::var_data_mut(&mut self.vars[var1.0])
                                     .entry(x)
-                                    .or_default()
-                                    .merge_flow(flow);
+                                    .or_insert_with(|| Edge::Noop)
+                                    .merge(edge.clone());
                             }
                         }
                         for x in T::var_data(&self.vars[var1.0])
@@ -585,11 +663,11 @@ impl TypeCk {
                             .cloned()
                             .collect::<Vec<_>>()
                         {
-                            let x = self.change_level(x, level, cache, raise, flow);
+                            let x = self.change_level(x, level, cache, raise, edge);
                             T::var_data_mut(&mut self.vars[ret.0])
                                 .entry(x)
-                                .or_default()
-                                .merge_flow(flow);
+                                .or_insert_with(|| Edge::Noop)
+                                .merge(edge.clone());
                         }
                     }
                     *var = ret;
@@ -610,7 +688,7 @@ impl TypeCk {
                 ty_cache_2: &mut HashMap::new(),
             },
             false,
-            Flow::Strong,
+            &Edge::Strong,
         )
     }
     fn gv_node_id<T: PolarPrimitive>(&self, p: Id<T>) -> String {

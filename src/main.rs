@@ -219,6 +219,13 @@ fn main() {
     };
     let ty = ctx.ck.add_ty(typeck::Pos::Var(main_var), Span::default());
     let ty = if poly { ctx.ck.monomorphize(ty, 0) } else { ty };
+    match ctx.ck.postproc() {
+        Ok(()) => {}
+        Err(err) => {
+            show_err(&input_file, &text, err.into());
+            std::process::exit(1);
+        }
+    }
     println!("hir -> value");
     println!(
         "{:?}",

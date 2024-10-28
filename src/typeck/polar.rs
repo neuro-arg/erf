@@ -7,11 +7,30 @@ use crate::{util::IdSpan, Span};
 
 use super::{Edge, NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
 
+// NOTE: see the invariant comment in TypeCk::postproc
+
+#[derive(Copy, Clone, Debug)]
+pub enum AnyId<T: PolarPrimitive> {
+    Same(IdSpan<T>),
+    Inverse(IdSpan<T::Inverse>),
+    Var(VarId),
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum AnyIdRef<'a, T: PolarPrimitive> {
     Same(&'a IdSpan<T>),
     Inverse(&'a IdSpan<T::Inverse>),
     Var(&'a VarId),
+}
+
+impl<T: PolarPrimitive> AnyIdRef<'_, T> {
+    pub fn into_owned(self) -> AnyId<T> {
+        match self {
+            Self::Same(x) => AnyId::Same(*x),
+            Self::Inverse(x) => AnyId::Inverse(*x),
+            Self::Var(x) => AnyId::Var(*x),
+        }
+    }
 }
 
 #[derive(Debug)]

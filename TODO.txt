@@ -6,3 +6,13 @@ that is, i will have to throw away graphviz debug output but error diagnostics w
 
 for best performance, figure out how to ensure ConstraintGraph::constraints hashes ids semantically
 (maybe split ids into "shape id" and "type id", and use OrderedMap<ShapeId, TypeId>?)
+
+
+
+- only retain new query generations in flows for optimization
+
+- allow matching on multiple patterns
+^this requires checking whether pos can *sometimes* be used in neg, not whether it *always* can be used in neg.
+how to do it? well, a potential solution is creating a separate query for every new inflow.
+Sounds slow, but what else can you realistically do here?
+^if match patterns are kept small (if cuts are well placed), this won't be super bad actually

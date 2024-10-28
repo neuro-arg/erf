@@ -9,7 +9,7 @@ use malachite::num::logic::traits::SignificantBits;
 use crate::{
     ast::{self, LetPattern},
     diag,
-    typeck::{Neg, Pos, PosIdS, PosPrim, TypeCk, VarId},
+    typeck::{Edge, Neg, Pos, PosIdS, PosPrim, TypeCk, VarId},
 };
 
 // VarId technically comes from the type checker,
@@ -211,7 +211,7 @@ impl Ctx {
                     for (var, var_inp, expr1) in exprs {
                         let expr1 = self.lower_expr(bindings, *expr1, level + 1)?;
                         // now direct expr1 to var_inp (assignment)
-                        self.ck.flow(expr1.ty, var_inp, Default::default())?;
+                        self.ck.flow(expr1.ty, var_inp, Edge::Strong)?;
                         // and actually bind this variable
                         vars.push((var, expr1));
                     }
@@ -270,7 +270,7 @@ impl Ctx {
                         let func_inp = Neg::Func(arg.ty, ret_inp);
                         // the func's span is, well, the func's span
                         let func_inp = self.ck.add_ty(func_inp, func_span);
-                        self.ck.flow(func.ty, func_inp, Default::default())?;
+                        self.ck.flow(func.ty, func_inp, Edge::Strong)?;
                         Ok(Term {
                             inner: TermInner::Application(Box::new(func), Box::new(arg)),
                             ty: ret_out,
@@ -383,7 +383,7 @@ impl Ctx {
         for (var, var_inp, expr1) in exprs {
             let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?;
             // now direct expr1 to var_inp (assignment)
-            self.ck.flow(expr1.ty, var_inp, Default::default())?;
+            self.ck.flow(expr1.ty, var_inp, Edge::Strong)?;
             // and actually bind this variable
             ret1.insert(var, expr1);
             // vars.0.push((var, expr1));
