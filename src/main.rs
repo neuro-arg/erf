@@ -237,7 +237,7 @@ fn main() {
     match ctx.ck.postproc() {
         Ok(()) => {}
         Err(err) => {
-            show_err(&input_file, &text, err.into());
+            show_err(&input_file, &text, err);
             std::process::exit(1);
         }
     }
@@ -245,7 +245,8 @@ fn main() {
     println!(
         "{:?}",
         hir_eval::eval_term(
-            &mut scope.try_into().unwrap(),
+            &mut hir_eval::Scope::from_hir_scope(scope, &ctx.ck).unwrap(),
+            &ctx.ck,
             hir::Term {
                 inner: hir::TermInner::VarAccess(main_var),
                 ty,

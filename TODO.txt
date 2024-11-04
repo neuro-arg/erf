@@ -16,3 +16,8 @@ for best performance, figure out how to ensure ConstraintGraph::constraints hash
 how to do it? well, a potential solution is creating a separate query for every new inflow.
 Sounds slow, but what else can you realistically do here?
 ^if match patterns are kept small (if cuts are well placed), this won't be super bad actually
+^this isn't actually enough since this can only resolve top-level "choices", but sub-typevars may also come from multiple
+ sources. Instead, I suppose a proper solution needs to do subsumption checks, this is like a flipped version of the normal
+ biunification algo (in the normal algo, we fail on any conflict, but here we must succeed on any success, but pass through
+ any failures to the next branch)
+^all in all this is important to implement for refutable patterns

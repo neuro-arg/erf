@@ -575,6 +575,60 @@ impl fmt::Display for VarRedefinitionError {
 }
 
 #[derive(Debug, Error)]
+pub struct MixedPolyMonoVarError {
+    span: Span,
+    orig: Span,
+    name: String,
+}
+
+impl MixedPolyMonoVarError {
+    pub fn new(name: impl Into<String>, span: Span, orig: Span) -> Self {
+        Self {
+            name: name.into(),
+            span,
+            orig,
+        }
+    }
+}
+
+impl fmt::Display for MixedPolyMonoVarError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "polymorphic var `{}` redefined as monomorphic",
+            self.name
+        )
+    }
+}
+
+#[derive(Debug, Error)]
+pub struct UnsatPatternError {
+    val_span: Span,
+    pat_spans: Vec<Span>,
+    name: Option<String>,
+}
+
+impl UnsatPatternError {
+    pub fn new(name: Option<String>, val_span: Span, pat_spans: Vec<Span>) -> Self {
+        Self {
+            name,
+            val_span,
+            pat_spans,
+        }
+    }
+}
+
+impl fmt::Display for UnsatPatternError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = &self.name {
+            write!(f, "unsatisfiable pattern: {name}")
+        } else {
+            f.write_str("unsatisfiable pattern")
+        }
+    }
+}
+
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("parse error")]
     Lalrpop(u8, lalrpop_util::ParseError<usize, (usize, String), String>),
@@ -595,6 +649,18 @@ pub enum Error {
         #[source]
         #[from]
         VarRedefinitionError,
+    ),
+    #[error("{0}")]
+    MixedPolyMonoVar(
+        #[source]
+        #[from]
+        MixedPolyMonoVarError,
+    ),
+    #[error("{0}")]
+    UnsatPattern(
+        #[source]
+        #[from]
+        UnsatPatternError,
     ),
     #[error("error: {0}")]
     Other(String, Span),
@@ -678,6 +744,46 @@ impl Error {
                 );
                 msg
             }
+            Self::UnsatPattern(UnsatPatternError {
+                val_span,
+                pat_spans,
+                name,
+            }) => {
+                let mut msg = ariadne
+                    .with_message(if let Some(name) = name {
+                        format!("unsatisfiable pattern `{name}`")
+                    } else {
+                        "unsatisfiable pattern".to_owned()
+                    })
+                    .with_label(
+                        ariadne::Label::new(resolve(val_span))
+                            .with_message("value comes from here"),
+                    );
+                let mut first = true;
+                for span in pat_spans {
+                    msg =
+                        msg.with_label(ariadne::Label::new(resolve(span)).with_message(if first {
+                            first = false;
+                            "the pattern is defined here"
+                        } else {
+                            "and here"
+                        }));
+                }
+                msg = msg.with_note(
+                    "variables can't be defined in multiple places within the same scope",
+                );
+                msg
+            }
+            Self::MixedPolyMonoVar(MixedPolyMonoVarError { name, span, orig }) => ariadne
+                .with_message(format!("`{name}` must be generic"))
+                .with_label(
+                    ariadne::Label::new(resolve(orig))
+                        .with_message("first defined here as a generic function"),
+                )
+                .with_label(
+                    ariadne::Label::new(resolve(span))
+                        .with_message("redefined here as a non-generic variable"),
+                ),
             Self::Other(error, span) => ariadne
                 .with_message("unknown error")
                 .with_label(ariadne::Label::new(resolve(span)).with_message(error)),

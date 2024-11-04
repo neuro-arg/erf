@@ -9,7 +9,8 @@ use malachite::num::logic::traits::SignificantBits;
 use crate::{
     ast::{self, Expr, Ident, LetArm, LetPatternInner},
     diag,
-    typeck::{Edge, Neg, NegIdS, Pos, PosIdS, PosPrim, TypeCk, VarId},
+    typeck::{Edge, Neg, NegIdS, Pos, PosIdS, PosPrim, Query, QueryId, TypeCk, VarId},
+    Span,
 };
 
 // VarId technically comes from the type checker,
@@ -20,6 +21,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum Value {
     Lambda(VarId, Box<Term>),
+    Match(QueryId, Vec<Term>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -189,15 +191,15 @@ impl Ctx {
         ident: String,
         exprs: Vec<LetArm>,
         level: u16,
-    ) -> Result<((Ident, VarId, PosIdS), (Ident, VarId, NegIdS, Expr)), diag::VarRedefinitionError>
-    {
+    ) -> Result<((Ident, VarId, PosIdS), (Ident, VarId, NegIdS, Expr)), diag::Error> {
         assert!(!exprs.is_empty());
         if matches!(exprs.first().unwrap().pattern.inner, LetPatternInner::Val) {
             if exprs.len() != 1 {
                 return Err(diag::VarRedefinitionError::new(
                     ident,
                     exprs.into_iter().map(|x| x.pattern.span).collect(),
-                ));
+                )
+                .into());
             }
             let def = exprs.into_iter().next().unwrap();
             let pat = def.pattern;
@@ -207,7 +209,51 @@ impl Ctx {
             let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
             Ok(((ident.clone(), var, var_out), (ident, var, var_inp, expr)))
         } else {
-            todo!()
+            let span1 = exprs.first().unwrap().pattern.span;
+            let exprs = exprs
+                .into_iter()
+                .map(|expr| {
+                    Ok(match expr.pattern.inner {
+                        LetPatternInner::Val => {
+                            return Err(diag::MixedPolyMonoVarError::new(
+                                ident.clone(),
+                                expr.pattern.span,
+                                span1,
+                            ))
+                        }
+                        LetPatternInner::Func(f) => {
+                            let mut expr = expr.body;
+                            for pat in f.into_iter().rev() {
+                                expr = ast::Expr {
+                                    span: Span::new(expr.span.file, pat.span.left, expr.span.right),
+                                    inner: ast::ExprInner::Lambda(pat, Box::new(expr)),
+                                };
+                            }
+                            expr
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if exprs.len() == 1 {
+                let expr = exprs.into_iter().next().unwrap();
+                // let pat = def.pattern;
+                // let expr = def.body;
+                let var = self.ck.add_var(Some(ident.clone()), level + 1);
+                // its span is to be the pattern's span
+                let (var_out, var_inp) = var.polarize(&mut self.ck, span1);
+                Ok(((ident.clone(), var, var_out), (ident, var, var_inp, expr)))
+            } else {
+                let var = self.ck.add_var(Some(ident.clone()), level + 1);
+                // let (var_out, var_inp) = var.polarize(&mut self.ck, span1);
+                let var_out = self.ck.add_ty(Pos::Var(var), span1);
+                let m = self.ck.add_query(Query::Match {
+                    current: 0,
+                    branches: (),
+                    name: Some(ident.clone()),
+                    in_var: (var, var_out),
+                });
+                todo!()
+            }
         }
     }
     fn lower_expr(

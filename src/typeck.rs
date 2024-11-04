@@ -170,7 +170,12 @@ impl Edge {
 #[derive(Debug)]
 pub enum Query {
     /// Delayed query with no immediate fail handlers
-    Delayed { success: bool },
+    Match {
+        current: u32,
+        branches: Vec<(VarId, NegIdS, Span)>,
+        name: Option<String>,
+        in_var: (VarId, PosIdS),
+    },
 }
 
 impl Query {
@@ -178,13 +183,7 @@ impl Query {
     /// considered invalid.
     pub fn generation(&self) -> NonZeroU32 {
         match self {
-            Self::Delayed { success } => {
-                if *success {
-                    1.try_into().unwrap()
-                } else {
-                    2.try_into().unwrap()
-                }
-            }
+            Self::Match { current, .. } => (*current + 1).try_into().unwrap(),
         }
     }
 }
@@ -259,7 +258,7 @@ impl TypeCk {
             .unwrap_or(0)
     }
     /// Remove a boundary from the var
-    fn unblock_var(&mut self, var: VarId, var_span: Span) -> Result<(), diag::TypeError> {
+    fn unblock_var(&mut self, var: VarId, var_span: Span) -> Result<(), diag::Error> {
         assert!(self.vars[var.0].boundary);
         let mut union = IndexMap::new();
         let mut inter = IndexMap::new();
@@ -281,7 +280,7 @@ impl TypeCk {
     }
     /// Post-processing (should be done after all the types have been added)
     /// This removes all var boundaries, letting types flow freely
-    pub fn postproc(&mut self) -> Result<(), diag::TypeError> {
+    pub fn postproc(&mut self) -> Result<(), diag::Error> {
         let mut stack = Vec::new();
         let mut var_vis = vec![false; self.vars.len()];
         let mut pos_vis = vec![false; self.pos.len()];
@@ -294,7 +293,7 @@ impl TypeCk {
                    var_vis: &mut Vec<bool>,
                    pos_vis: &mut Vec<bool>,
                    this: &mut Self|
-         -> Result<(), diag::TypeError> {
+         -> Result<(), diag::Error> {
             while let Some(elem) = stack.pop() {
                 let pos_id = match elem {
                     StackElem::Visit(x) => x,
@@ -360,7 +359,7 @@ impl TypeCk {
         }
         Ok(())
     }
-    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS, edge: Edge) -> Result<(), diag::TypeError> {
+    pub fn flow(&mut self, pos: PosIdS, neg: NegIdS, edge: Edge) -> Result<(), diag::Error> {
         // reuse queue buffer, but clear it every time
         self.q.queue.clear();
         self.q.enqueue(pos, neg, edge);
@@ -380,7 +379,7 @@ impl TypeCk {
                 ) => {
                     if s1 != s2 || b1 != b2 {
                         // coercion not implemented
-                        self.fail_edge(edge, |this| {
+                        self.fail_edge(edge, pos, neg, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -398,7 +397,7 @@ impl TypeCk {
                 ) => {
                     if b1 != b2 {
                         // coercion not implemented
-                        self.fail_edge(edge, |this| {
+                        self.fail_edge(edge, pos, neg, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -423,7 +422,7 @@ impl TypeCk {
                     }),
                 ) => {
                     if (s1 != s2 || b1 > b2) && (!s2 || *s1 || b1 >= b2) {
-                        self.fail_edge(edge, |this| {
+                        self.fail_edge(edge, pos, neg, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -442,7 +441,7 @@ impl TypeCk {
                         let field = k.clone();
                         let neg = *neg;
                         // missing field
-                        self.fail_edge(edge, |this| {
+                        self.fail_edge(edge, pos, neg, |this| {
                             diag::TypeError::new(
                                 HumanType::from_pos(this, pos.id()),
                                 HumanType::from_neg(this, neg.id()),
@@ -527,7 +526,7 @@ impl TypeCk {
                     }
                 }
                 (_, _) => {
-                    self.fail_edge(edge, |this| {
+                    self.fail_edge(edge, pos, neg, |this| {
                         diag::TypeError::new(
                             HumanType::from_pos(this, pos.id()),
                             HumanType::from_neg(this, neg.id()),
@@ -547,30 +546,55 @@ impl TypeCk {
     fn fail_edge(
         &mut self,
         edge: Edge,
+        pos: PosIdS,
+        neg: NegIdS,
         ret: impl FnOnce(&mut Self) -> diag::TypeError,
-    ) -> Result<(), diag::TypeError> {
+    ) -> Result<(), diag::Error> {
         match edge {
             Edge::Noop => Ok(()),
             Edge::Weak { queries } => {
                 for (query, generation) in &queries {
                     if self.q.queries[query.0].generation().get() == *generation {
-                        self.fail_query(*query)?;
+                        self.fail_query(*query, pos, neg)?;
                     }
                 }
                 Ok(())
             }
-            Edge::Strong => Err(ret(self)),
+            Edge::Strong => Err(ret(self).into()),
         }
     }
     /// This is called as part of `edge`. Fail the query, potentially refreshing the generation and
     /// creating new flows.
-    fn fail_query(&mut self, query: QueryId) -> Result<(), diag::TypeError> {
+    fn fail_query(&mut self, query: QueryId, pos: PosIdS, _neg: NegIdS) -> Result<(), diag::Error> {
         match &mut self.q.queries[query.0] {
-            Query::Delayed { success } => {
-                *success = false;
-                Ok(())
+            Query::Match {
+                name,
+                current,
+                in_var,
+                branches,
+            } => {
+                *current += 1;
+                if let Some(branch) = branches.get(*current as usize) {
+                    let edge = Edge::Weak {
+                        queries: [(query, *current + 1)].into_iter().collect(),
+                    };
+                    let pos = in_var.1;
+                    let neg = branch.1;
+                    self.flow(pos, neg, edge)
+                } else {
+                    Err(diag::UnsatPatternError::new(
+                        name.clone(),
+                        pos.span(),
+                        branches.iter().map(|x| x.2).collect(),
+                    )
+                    .into())
+                }
             }
         }
+    }
+    pub fn match_branch(&self, query: QueryId) -> usize {
+        let Query::Match { current, .. } = &self.q.queries[query.0];
+        *current as usize
     }
     /// This is a function used for let polymorphism. Each time the let binding is used, it may
     /// have different types - for example, an identity function may have the type `bool -> bool`
