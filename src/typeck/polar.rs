@@ -1,10 +1,9 @@
 //! This module has the most boring code I ever wrote in my life
 use std::hash::Hash;
 
-use crate::{
-    util::{IdSpan, OrderedSet},
-    Span,
-};
+use indexmap::IndexSet;
+
+use crate::{util::IdSpan, Span};
 
 use super::{NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
 
@@ -27,8 +26,8 @@ pub trait PolarPrimitive: Clone + Eq + Hash {
     const POSITIVE: bool;
     fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>);
     fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>>;
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>>;
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>>;
+    fn var_data_mut(var: &mut VarState) -> &mut IndexSet<IdSpan<Self>>;
+    fn var_data(var: &VarState) -> &IndexSet<IdSpan<Self>>;
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>>;
     fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>>;
 }
@@ -42,10 +41,10 @@ impl PolarPrimitive for PosPrim {
     fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
         &ck.pos
     }
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
+    fn var_data_mut(var: &mut VarState) -> &mut IndexSet<IdSpan<Self>> {
         &mut var.union
     }
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
+    fn var_data(var: &VarState) -> &IndexSet<IdSpan<Self>> {
         &var.union
     }
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
@@ -119,10 +118,10 @@ impl PolarPrimitive for NegPrim {
     fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>> {
         &ck.neg
     }
-    fn var_data_mut(var: &mut VarState) -> &mut OrderedSet<IdSpan<Self>> {
+    fn var_data_mut(var: &mut VarState) -> &mut IndexSet<IdSpan<Self>> {
         &mut var.inter
     }
-    fn var_data(var: &VarState) -> &OrderedSet<IdSpan<Self>> {
+    fn var_data(var: &VarState) -> &IndexSet<IdSpan<Self>> {
         &var.inter
     }
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {

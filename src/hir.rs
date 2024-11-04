@@ -3,13 +3,13 @@
 
 use std::{collections::HashMap, str::FromStr};
 
+use indexmap::IndexMap;
 use malachite::num::logic::traits::SignificantBits;
 
 use crate::{
     ast::{self, LetPattern},
     diag,
     typeck::{Neg, Pos, PosIdS, PosPrim, TypeCk, VarId},
-    util::OrderedMap,
 };
 
 // VarId technically comes from the type checker,
@@ -164,7 +164,7 @@ impl Bindings {
 
 #[derive(Debug, Default)]
 pub struct Scope {
-    pub map: OrderedMap<VarId, Term>,
+    pub map: IndexMap<VarId, Term>,
 }
 
 impl Scope {

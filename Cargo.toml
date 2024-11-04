@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 ariadne = { version = "0.4.1", features = ["auto-color"] }
 immutable-chunkmap = "2.0.5"
+indexmap = "2.6.0"
 lalrpop-util = { version = "0.22.0", features = ["lexer"] }
 logos = "0.14.2"
 malachite = "0.4.16"

@@ -3,11 +3,12 @@ use std::{
     hash::Hash,
 };
 
+use indexmap::IndexSet;
 use polar::{AnyIdMut, AnyIdRef, PolarPrimitive};
 
 use crate::{
     diag::{self, HumanType},
-    util::{Id, IdSpan, OrderedSet},
+    util::{Id, IdSpan},
     Span,
 };
 
@@ -62,8 +63,8 @@ pub type NegIdS = IdSpan<NegPrim>;
 #[derive(Clone, Debug, Default)]
 pub struct VarState {
     label: Option<String>,
-    union: OrderedSet<PosIdS>,
-    inter: OrderedSet<NegIdS>,
+    union: IndexSet<PosIdS>,
+    inter: IndexSet<NegIdS>,
     level: u16,
 }
 
@@ -236,7 +237,7 @@ impl TypeCk {
                     } else {
                         neg
                     };
-                    if self.vars[pos.0].inter.insert(neg).0 {
+                    if self.vars[pos.0].inter.insert(neg) {
                         for x in &self.vars[pos.0].union {
                             self.q.enqueue(*x, neg);
                         }
@@ -256,7 +257,7 @@ impl TypeCk {
                     } else {
                         pos
                     };
-                    if self.vars[neg.0].union.insert(pos).0 {
+                    if self.vars[neg.0].union.insert(pos) {
                         for y in &self.vars[neg.0].inter {
                             self.q.enqueue(pos, *y);
                         }
