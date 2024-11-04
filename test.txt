@@ -1,4 +1,5 @@
 # test
-id = x => x;
-main = (id => id id 6) id;
+type Test;
+a_wrap = x => Test x;
+main = (f => f 6) a_wrap;
 

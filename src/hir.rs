@@ -9,7 +9,7 @@ use malachite::num::logic::traits::SignificantBits;
 use crate::{
     ast::{self, Expr, Ident, LetArm, LetPatternInner},
     diag,
-    typeck::{Neg, NegIdS, Pos, PosIdS, PosPrim, TypeCk, VarId},
+    typeck::{LabelId, Neg, NegIdS, Pos, PosIdS, PosPrim, TypeCk, VarId},
 };
 
 // VarId technically comes from the type checker,
@@ -41,6 +41,7 @@ pub enum TermInner {
     },
     VarAccess(VarId),
     Value(Value),
+    AttachTag(LabelId, Box<Term>),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -273,6 +274,33 @@ impl Ctx {
                         ty,
                         inner: TermInner::Value(Value::Lambda(arg, Box::new(expr1))),
                     })
+                })
+            }
+            ast::ExprInner::TypeConstructor(ident) => {
+                // spans are kinda wacky but whatever
+                let id = self.ck.add_label(ident);
+                let arg = self.ck.add_var(None, level);
+                let (arg_out, arg_inp) = arg.polarize(&mut self.ck, expr.span);
+                let ret_out = self
+                    .ck
+                    .add_ty(Pos::Prim(PosPrim::Label(id, arg_out)), expr.span);
+                let ty = Pos::Func(arg_inp, ret_out);
+                let ty = self.ck.add_ty(ty, expr.span);
+                Ok(Term {
+                    inner: TermInner::Value(Value::Lambda(
+                        arg,
+                        Box::new(Term {
+                            inner: TermInner::AttachTag(
+                                id,
+                                Box::new(Term {
+                                    inner: TermInner::VarAccess(arg),
+                                    ty: arg_out,
+                                }),
+                            ),
+                            ty: ret_out,
+                        }),
+                    )),
+                    ty,
                 })
             }
             ast::ExprInner::BinOp(op, a, b) => {

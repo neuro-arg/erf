@@ -40,6 +40,7 @@ pub enum HumanType {
     Float {
         bits: Option<u8>,
     },
+    Tagged(String, Box<HumanType>),
     Record(BTreeMap<String, HumanType>),
     Func(Box<HumanType>, Box<HumanType>),
     Recursive(TypeVar, Box<HumanType>),
@@ -55,6 +56,11 @@ impl fmt::Display for HumanType {
             Self::Bot => f.write_str("any"),
             Self::Void => f.write_str("()"),
             Self::Bool => f.write_str("bool"),
+            Self::Tagged(a, b) => {
+                f.write_str(a)?;
+                f.write_char(' ')?;
+                b.fmt(f)
+            }
             Self::Int {
                 signed: None,
                 bits: None,
@@ -337,6 +343,10 @@ impl HumanType {
                 Box::new(Self::from_neg2(ck, a.id(), rec)),
                 Box::new(Self::from_pos2(ck, b.id(), rec)),
             ),
+            Pos::Prim(PosPrim::Label(a, b)) => Self::Tagged(
+                ck.label(*a).to_owned(),
+                Box::new(Self::from_pos2(ck, b.id(), rec)),
+            ),
         };
         if let Some(var) = rec.0.get(&pos.into()).unwrap() {
             HumanType::Recursive(*var, Box::new(ret))
@@ -420,6 +430,9 @@ impl HumanType {
             }
             Self::Recursive(a, b) => {
                 *out.entry(*a).or_default() += 1;
+                b.collect_vars(out);
+            }
+            Self::Tagged(_, b) => {
                 b.collect_vars(out);
             }
             Self::Union(x) | Self::Intersection(x) => x.iter().for_each(|x| x.collect_vars(out)),

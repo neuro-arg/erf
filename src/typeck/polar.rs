@@ -50,6 +50,7 @@ impl PolarPrimitive for PosPrim {
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
+            Single(std::option::IntoIter<&'a IdSpan<T>>),
             Record(std::collections::btree_map::Values<'a, String, IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
@@ -57,17 +58,20 @@ impl PolarPrimitive for PosPrim {
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
+                    Self::Single(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
+                    Self::Single(x) => x.next().map(AnyIdRef::Same),
                     Self::Record(x) => x.next().map(AnyIdRef::Same),
                 }
             }
         }
         match self {
+            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
             Self::Record(x) => Iter::Record(x.values()),
             Self::Void
             | Self::Bool
@@ -80,6 +84,7 @@ impl PolarPrimitive for PosPrim {
     fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
+            Single(std::option::IntoIter<&'a mut IdSpan<T>>),
             Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
@@ -87,17 +92,20 @@ impl PolarPrimitive for PosPrim {
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
+                    Self::Single(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
+                    Self::Single(x) => x.next().map(AnyIdMut::Same),
                     Self::Record(x) => x.next().map(AnyIdMut::Same),
                 }
             }
         }
         match self {
+            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
             Self::Record(x) => Iter::Record(x.values_mut()),
             Self::Void
             | Self::Bool

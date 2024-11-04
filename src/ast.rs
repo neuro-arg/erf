@@ -44,11 +44,12 @@ pub enum BinOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprInner {
     Literal(LiteralKind, String),
-    Variable(String),
+    Variable(Ident),
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Lambda(Pattern, Box<Expr>),
     LetRec(BTreeMap<Ident, Vec<LetArm>>, Box<Expr>),
+    TypeConstructor(Ident),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

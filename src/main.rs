@@ -61,6 +61,17 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn let_pattern_type(
+        &mut self,
+        ident: impl Construct<Ident>,
+        span: impl Construct<Span>,
+    ) -> (ast::LetPattern, Expr) {
+        let ident = ident.construct(self);
+        let span = span.construct(self);
+        let pat = ast::LetPattern::new_val(ident.clone(), span);
+        let expr = Expr::new(ExprInner::TypeConstructor(ident), span);
+        (pat, expr)
+    }
     pub fn let_pattern_var(
         &mut self,
         ident: impl Construct<Ident>,

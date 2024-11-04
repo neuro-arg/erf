@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     diag::Error,
     hir::{self, Term},
-    typeck::VarId,
+    typeck::{LabelId, VarId},
 };
 
 #[derive(Clone, Debug)]
@@ -13,6 +13,7 @@ pub enum Value {
     Float(f64),
     Int(malachite_nz::integer::Integer),
     Intrinsic(hir::Intrinsic),
+    Tagged(LabelId, Box<Value>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,6 +62,9 @@ impl TryFrom<hir::Scope> for Scope {
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
     match term.inner {
+        hir::TermInner::AttachTag(tag, val) => {
+            Ok(Value::Tagged(tag, Box::new(eval_term(scope, *val)?)))
+        }
         hir::TermInner::Bind { bindings, expr } => scope.scope(|scope, handle| {
             for (var, term) in Vec::from(bindings) {
                 let val = eval_term(scope, term)?;

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     hash::Hash,
+    num::NonZeroUsize,
 };
 
 use indexmap::IndexSet;
@@ -13,6 +14,9 @@ use crate::{
 };
 
 mod polar;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LabelId(NonZeroUsize);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VarId(usize);
@@ -33,6 +37,7 @@ pub enum PosPrim {
     IntLiteral { signed: bool, bits: u8 },
     FloatLiteral,
     Record(BTreeMap<String, IdSpan<Self>>),
+    Label(LabelId, IdSpan<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -82,6 +87,7 @@ pub struct TypeCk {
     neg: Vec<Neg>,
     pos_spans: Vec<Span>,
     neg_spans: Vec<Span>,
+    labels: Vec<String>,
 }
 
 impl ConstraintGraph {
@@ -93,6 +99,13 @@ impl ConstraintGraph {
 }
 
 impl TypeCk {
+    pub fn add_label(&mut self, label: String) -> LabelId {
+        self.labels.push(label);
+        LabelId(NonZeroUsize::new(self.labels.len()).unwrap())
+    }
+    pub fn label(&self, id: LabelId) -> &str {
+        &self.labels[id.0.get() - 1]
+    }
     pub fn add_var(&mut self, label: Option<String>, level: u16) -> VarId {
         self.vars.push(VarState {
             label,

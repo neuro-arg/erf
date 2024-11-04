@@ -150,7 +150,10 @@ LetBindingArm: LetArm = {
         let p = ctx.let_pattern_func(x, args, (l, r0));
         ctx.let_arm(p, b, (l, r))
     },
-    // <l: @L> <x:Ident> Comment* 
+    <l: @L> "type" Comment* <l1: @L> <x:Ident> <r1: @R> Comment* ";" <r: @R> Comment* => {
+        let (p, b) = ctx.let_pattern_type(x, (l1, r1));
+        ctx.let_arm(p, b, (l, r))
+    }
 };
 
 ArgPattern: Pattern = {
