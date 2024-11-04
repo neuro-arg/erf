@@ -1,4 +1,4 @@
-use super::ast::{self, Expr, LetArm, LetPattern, Pattern};
+use super::ast::{self, Expr, LetArm, Pattern};
 
 grammar(ctx: &mut crate::ParseCtx);
 
@@ -142,22 +142,27 @@ Expr: Expr = {
 };
 
 LetBindingArm: LetArm = {
-    <p:LetPattern> "=" Comment* <b:Expr> ";" Comment* => {
-    	ctx.let_arm(p, b)
-    }
+    <l: @L> <x:Ident> <r0: @R> Comment* "=" Comment* <b:Expr> ";" <r: @R> Comment* => {
+        let p = ctx.let_pattern_var(x, (l, r));
+        ctx.let_arm(p, b, (l, r))
+    },
+    <l: @L> <x:Ident> <args:ArgPattern+> <r0: @R> "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
+        let p = ctx.let_pattern_func(x, args, (l, r0));
+        ctx.let_arm(p, b, (l, r))
+    },
+    // <l: @L> <x:Ident> Comment* 
 };
 
-LetPattern: LetPattern = {
-    <l: @L> <x:Ident> <r: @R> => ctx.let_pattern_var(x, (l, r)),
-};
-
+ArgPattern: Pattern = {
+    <x:Pattern> Comment* => x,
+}
 Pattern: Pattern = {
     <l: @L> <x:Ident> <r: @R> => ctx.pattern_var(x, (l, r)),
 };
 
 TopLevelDecl: ast::Tld = {
-    <l: @L> <pat:LetPattern> "=" Comment* <body:Expr> ";" <r: @R> Comment* => {
-    	ctx.tld(pat, body, (l, r))
+    <b:LetBindingArm> => {
+        ctx.tld(b)
     }
 };
 

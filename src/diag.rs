@@ -554,6 +554,27 @@ impl fmt::Display for NameNotFoundError {
 }
 
 #[derive(Debug, Error)]
+pub struct VarRedefinitionError {
+    spans: Vec<Span>,
+    name: String,
+}
+
+impl VarRedefinitionError {
+    pub fn new(name: impl Into<String>, spans: Vec<Span>) -> Self {
+        Self {
+            name: name.into(),
+            spans,
+        }
+    }
+}
+
+impl fmt::Display for VarRedefinitionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "name redefinition: {}", self.name)
+    }
+}
+
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("parse error")]
     Lalrpop(u8, lalrpop_util::ParseError<usize, (usize, String), String>),
@@ -568,6 +589,12 @@ pub enum Error {
         #[source]
         #[from]
         NameNotFoundError,
+    ),
+    #[error("{0}")]
+    Redefinition(
+        #[source]
+        #[from]
+        VarRedefinitionError,
     ),
     #[error("error: {0}")]
     Other(String, Span),
@@ -629,10 +656,27 @@ impl Error {
                 ariadne
             }
             Self::NameNotFound(NameNotFoundError { span, name }) => {
-                ariadne.with_message("name not found").with_label(
+                ariadne.with_message("name not in scope").with_label(
                     ariadne::Label::new(resolve(span))
                         .with_message(format!("name `{name}` not found")),
                 )
+            }
+            Self::Redefinition(VarRedefinitionError { spans, name }) => {
+                let mut msg = ariadne.with_message(format!("redefinition of `{name}`"));
+                let mut first = true;
+                for span in spans {
+                    msg =
+                        msg.with_label(ariadne::Label::new(resolve(span)).with_message(if first {
+                            first = false;
+                            "defined here"
+                        } else {
+                            "also defined here"
+                        }));
+                }
+                msg = msg.with_note(
+                    "variables can't be defined in multiple places within the same scope",
+                );
+                msg
             }
             Self::Other(error, span) => ariadne
                 .with_message("unknown error")

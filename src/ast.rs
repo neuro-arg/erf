@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::Span;
 
 pub type Ident = String;
@@ -46,20 +48,18 @@ pub enum ExprInner {
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Lambda(Pattern, Box<Expr>),
-    LetRec(Vec<(LetPattern, Box<Expr>)>, Box<Expr>),
+    LetRec(BTreeMap<Ident, Vec<LetArm>>, Box<Expr>),
 }
 
-pub type LetArm = (LetPattern, Expr);
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tld {
+pub struct LetArm {
     pub pattern: LetPattern,
     pub body: Expr,
     pub span: Span,
 }
 
-impl Tld {
-    pub fn new(pattern: LetPattern, body: Expr, span: Span) -> Tld {
+impl LetArm {
+    pub fn new(pattern: LetPattern, body: Expr, span: Span) -> LetArm {
         Self {
             pattern,
             body,
@@ -67,6 +67,8 @@ impl Tld {
         }
     }
 }
+
+pub type Tld = LetArm;
 
 impl ExprInner {
     pub fn literal(kind: LiteralKind, s: impl Into<String>) -> Self {
@@ -85,10 +87,11 @@ impl ExprInner {
         Self::Lambda(lhs.into(), rhs.into())
     }
     pub fn letrec(target: impl IntoIterator<Item = LetArm>, body: impl Into<Box<Expr>>) -> Self {
-        Self::LetRec(
-            target.into_iter().map(|(a, b)| (a, Box::new(b))).collect(),
-            body.into(),
-        )
+        let mut map = BTreeMap::<_, Vec<_>>::new();
+        for arm in target.into_iter() {
+            map.entry(arm.pattern.ident.clone()).or_default().push(arm);
+        }
+        Self::LetRec(map, body.into())
     }
 }
 
@@ -142,22 +145,33 @@ impl Pattern {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LetPatternInner {
+    Val,
+    Func(Vec<Pattern>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetPattern {
-    pub ident: String,
-    // pub arg_patterns: Vec<Pattern>,
+    pub inner: LetPatternInner,
+    pub ident: Ident,
     pub span: Span,
 }
 
 impl LetPattern {
-    pub fn new(ident: String, span: Span) -> Self {
-        Self { ident, span }
+    pub fn new_val(ident: Ident, span: Span) -> Self {
+        Self {
+            inner: LetPatternInner::Val,
+            ident,
+            span,
+        }
+    }
+    pub fn new_func(ident: Ident, args: Vec<Pattern>, span: Span) -> Self {
+        Self {
+            inner: LetPatternInner::Func(args),
+            ident,
+            span,
+        }
     }
 }
 
-impl LetPattern {
-    pub fn label(&self) -> String {
-        self.ident.clone()
-    }
-}
-
-pub type Program = Vec<Tld>;
+pub type Program = BTreeMap<Ident, Vec<LetArm>>;

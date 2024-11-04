@@ -3,7 +3,9 @@
 #![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 
-use ast::{Expr, ExprInner, Ident, LiteralKind, Tld};
+use std::collections::BTreeMap;
+
+use ast::{Expr, ExprInner, Ident, LetArm, LiteralKind};
 
 mod ast;
 mod diag;
@@ -61,10 +63,22 @@ impl ParseCtx {
     }
     pub fn let_pattern_var(
         &mut self,
-        content: impl Construct<Ident>,
+        ident: impl Construct<Ident>,
         span: impl Construct<Span>,
     ) -> ast::LetPattern {
-        ast::LetPattern::new(content.construct(self), span.construct(self))
+        ast::LetPattern::new_val(ident.construct(self), span.construct(self))
+    }
+    pub fn let_pattern_func(
+        &mut self,
+        content: impl Construct<Ident>,
+        args: impl Construct<Vec<ast::Pattern>>,
+        span: impl Construct<Span>,
+    ) -> ast::LetPattern {
+        ast::LetPattern::new_func(
+            content.construct(self),
+            args.construct(self),
+            span.construct(self),
+        )
     }
     pub fn pattern_var(
         &mut self,
@@ -114,8 +128,13 @@ impl ParseCtx {
         &mut self,
         pat: impl Construct<ast::LetPattern>,
         expr: impl Construct<Expr>,
+        span: impl Construct<Span>,
     ) -> ast::LetArm {
-        (pat.construct(self), expr.construct(self))
+        ast::LetArm::new(
+            pat.construct(self),
+            expr.construct(self),
+            span.construct(self),
+        )
     }
     pub fn letrec(
         &mut self,
@@ -128,17 +147,8 @@ impl ParseCtx {
             span.construct(self),
         )
     }
-    pub fn tld(
-        &mut self,
-        pattern: impl Construct<ast::LetPattern>,
-        expr1: impl Construct<ast::Expr>,
-        span: impl Construct<Span>,
-    ) -> Tld {
-        Tld::new(
-            pattern.construct(self),
-            expr1.construct(self),
-            span.construct(self),
-        )
+    pub fn tld(&mut self, arm: impl Construct<ast::LetArm>) -> LetArm {
+        arm.construct(self)
     }
 }
 
@@ -197,6 +207,11 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let mut ast1 = BTreeMap::<_, Vec<_>>::new();
+    for x in ast {
+        ast1.entry(x.pattern.ident.clone()).or_default().push(x);
+    }
+    let ast = ast1;
     let mut ctx = hir::Ctx::default();
     println!("ast -> hir");
     let (bindings, scope) = match ctx.lower_ast(ast) {
