@@ -294,19 +294,42 @@ impl Ctx {
                             .collect(),
                     ));
                 }
-                let def = def;
-                let pat = def.pattern;
-                let expr = def.body;
-                let is_type = matches!(expr.inner, ast::ExprInner::TypeConstructor(_));
+                let is_type = matches!(def.body.inner, ast::ExprInner::TypeConstructor(_));
                 let var = self.ck.add_var(Some(ident.clone()), level + 1);
                 // its span is to be the pattern's span
-                let (var_out, var_inp) = var.polarize(&mut self.ck, pat.span);
+                let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
                 Ok((
                     (is_type, ident.clone(), var, var_out),
-                    (ident, var, var_inp, expr),
+                    (ident, var, var_inp, def.body),
                 ))
             }
-            LetPatternInner::Func(..) => todo!(),
+            LetPatternInner::Func(args) => {
+                if defs.next().is_some() {
+                    return Err(diag::VarRedefinitionError::new(
+                        ident,
+                        [def.pattern.span]
+                            .into_iter()
+                            .chain(defs.map(|x| x.pattern.span))
+                            .collect(),
+                    ));
+                }
+                let mut lambda = def.body;
+                for arg in args.into_iter().rev() {
+                    lambda = Expr {
+                        span: Span {
+                            left: arg.span.left,
+                            ..lambda.span
+                        },
+                        inner: ast::ExprInner::Lambda(arg, Box::new(lambda)),
+                    };
+                }
+                let var = self.ck.add_var(Some(ident.clone()), level + 1);
+                let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
+                Ok((
+                    (false, ident.clone(), var, var_out),
+                    (ident, var, var_inp, lambda),
+                ))
+            }
         }
     }
     fn lower_expr(

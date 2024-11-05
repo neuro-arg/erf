@@ -1,6 +1,6 @@
 # test
 type Test;
 type Test1;
-wrap = fun (Test1 x) => x;
+wrap (Test1 x) => x;
 main = (fun f => f (Test1 (fun x => x))) wrap 5;
 
