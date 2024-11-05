@@ -15,6 +15,7 @@ pub enum LiteralKind {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UnOp {
     Not,
+    BitNot,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

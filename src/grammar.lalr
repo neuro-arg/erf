@@ -49,6 +49,10 @@ Expr: Expr = {
     <l: @L> "!" Comment* <x:Expr> <r: @R> => {
         ctx.unary(ast::UnOp::Not, x, (l, r))
     },
+    #[precedence(level="2")]
+    <l: @L> "~" Comment* <x:Expr> <r: @R> => {
+        ctx.unary(ast::UnOp::BitNot, x, (l, r))
+    },
     // 3. pow
     #[precedence(level="3")] #[assoc(side="right")]
     <l: @L> <a:Expr> "**" Comment* <b:Expr> <r: @R> => {
