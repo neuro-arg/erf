@@ -1,7 +1,10 @@
 // an ir that offers a high level representation of types and control flow
 // it's the best choice for stuff like constant folding
 
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 
 use indexmap::IndexMap;
 use malachite::num::logic::traits::SignificantBits;
@@ -44,6 +47,10 @@ pub enum TermInner {
     VarAccess(VarId),
     Value(Value),
     AttachTag(LabelId, Box<Term>),
+    CheckTag {
+        var: VarId,
+        branches: BTreeMap<Option<LabelId>, Term>,
+    },
 }
 
 #[derive(Copy, Clone, Debug)]

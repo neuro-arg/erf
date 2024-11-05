@@ -62,6 +62,15 @@ impl TryFrom<hir::Scope> for Scope {
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
     match term.inner {
+        hir::TermInner::CheckTag { var, mut branches } => eval_term(
+            scope,
+            if let Value::Tagged(tag, _) = scope.get(var).unwrap() {
+                branches.remove(&Some(*tag))
+            } else {
+                None
+            }
+            .unwrap_or_else(|| branches.remove(&None).unwrap()),
+        ),
         hir::TermInner::AttachTag(tag, val) => {
             Ok(Value::Tagged(tag, Box::new(eval_term(scope, *val)?)))
         }
