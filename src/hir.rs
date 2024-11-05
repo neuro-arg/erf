@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
 };
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use malachite::num::logic::traits::SignificantBits;
 
 use crate::{
@@ -84,9 +84,12 @@ pub struct Term {
     pub ty: PosIdS,
 }
 
-#[derive(Clone, Debug, Default)]
+type VarOrder = IndexSet<VarId>;
+
+#[derive(Clone, Default)]
 pub struct Bindings {
-    ck_map: HashMap<String, Vec<VarType>>,
+    ck_map: HashMap<String, Vec<(VarType, Option<usize>)>>,
+    orders: Vec<VarOrder>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,21 +99,59 @@ struct Binding {
 }
 
 impl Bindings {
-    fn insert_ck(&mut self, s: String, var: VarType) {
-        self.ck_map.entry(s).or_default().push(var);
+    fn insert_ck(&mut self, s: String, var: VarType, use_order: bool) {
+        self.ck_map
+            .entry(s)
+            .or_default()
+            .push((var, use_order.then_some(self.orders.len())));
     }
     fn remove_ck(&mut self, s: &str) {
         self.ck_map.get_mut(s).unwrap().pop();
     }
-    pub fn get(&self, s: &str) -> Option<VarType> {
-        self.ck_map.get(s).and_then(|x| x.last()).copied()
+    pub fn get(
+        &mut self,
+        s: &str,
+        span: Span,
+        ck: &mut TypeCk,
+        level: u16,
+    ) -> Result<Option<(VarId, PosIdS, TermMeta)>, diag::Error> {
+        let Some((var, lvl)) = self.ck_map.get(s).and_then(|x| x.last()) else {
+            return Ok(None);
+        };
+        let (var, poly, type_id) = match var {
+            VarType::Mono(var) => (var, false, None),
+            VarType::Poly(var) => (var, true, None),
+            VarType::TypeConstructor(var, id) => (var, true, Some(id)),
+        };
+        if let Some(lvl) = lvl {
+            if !self.orders.is_empty() {
+                self.orders[*lvl].insert(*var);
+            }
+        }
+        let ty = ck.add_ty(Pos::Var(*var), span);
+        let ty = if poly { ck.monomorphize(ty, level) } else { ty };
+        Ok(Some((
+            *var,
+            ty,
+            if let Some(id) = type_id {
+                TermMeta::Type(*id)
+            } else {
+                TermMeta::None
+            },
+        )))
     }
-    pub fn get_type(&self, tag: &str, span: Span) -> Result<LabelId, diag::Error> {
+    pub fn get_type(
+        &mut self,
+        tag: &str,
+        span: Span,
+        ck: &mut TypeCk,
+        level: u16,
+    ) -> Result<LabelId, diag::Error> {
         match self
-            .get(tag)
+            .get(tag, span, ck, level)?
             .ok_or_else(|| diag::Error::NameNotFound(NameNotFoundError::new(tag, span, false)))?
         {
-            VarType::TypeConstructor(_, tag) => Ok(tag),
+            (_, _, TermMeta::Type(tag)) => Ok(tag),
             _ => Err(diag::Error::NameNotFound(NameNotFoundError::new(
                 tag, span, true,
             ))),
@@ -129,10 +170,10 @@ impl Bindings {
         match pat.inner {
             ast::PatternInner::Variable(name) => {
                 to_pop.push(name.clone());
-                self.insert_ck(name, VarType::Mono(var));
+                self.insert_ck(name, VarType::Mono(var), false);
             }
             ast::PatternInner::Tag(tag, span, pat) => {
-                let tag = self.get_type(&tag, span)?;
+                let tag = self.get_type(&tag, span, ck, level)?;
                 let var1 = ck.add_var(pat.label(), level);
                 let (var1_out, var1_inp) = var1.polarize(ck, pat.span);
                 let neg = ck.add_ty(Neg::Prim(NegPrim::Label(tag, var1_inp)), pat.span);
@@ -159,8 +200,9 @@ impl Bindings {
         // easily be lowered and more likely than not is broken)
         for (ident, var) in arms {
             to_pop.push(ident.clone());
-            self.insert_ck(ident, var);
+            self.insert_ck(ident, var, true);
         }
+        self.orders.push(IndexSet::new());
         to_pop
     }
     /// Execute `func` in a new scope.
@@ -189,13 +231,14 @@ impl Bindings {
         &mut self,
         arms: Vec<(Ident, VarType)>,
         func: impl FnOnce(&mut Self) -> T,
-    ) -> T {
+    ) -> (T, VarOrder) {
         let to_pop = self.insert_pattern_let(arms);
         let ret = func(self);
         for name in to_pop {
             self.remove_ck(&name);
         }
-        ret
+        let order = self.orders.pop().unwrap();
+        (ret, order)
     }
 }
 
@@ -220,7 +263,9 @@ pub struct Ctx {
     pub ck: TypeCk,
 }
 
-enum TermMeta {
+#[derive(Copy, Clone, Debug, Default)]
+pub enum TermMeta {
+    #[default]
     None,
     Type(LabelId),
 }
@@ -279,7 +324,7 @@ impl Ctx {
                     .collect::<Result<(Vec<_>, Vec<_>), _>>()?;
                 pats.sort_by_key(|(x, ..)| !*x);
                 // now create a new scope with that var and lower the expr in that scope
-                bindings.new_scope_let(
+                let (res, order) = bindings.new_scope_let(
                     pats.into_iter()
                         .map(|(is_type, ident, var, _var_out)| {
                             let t = if is_type {
@@ -301,15 +346,18 @@ impl Ctx {
                         }
                         // finally, lower expr2 in the new scope
                         let expr = self.lower_expr(bindings, *body, level)?.0;
-                        Ok(Term {
-                            ty: expr.ty,
-                            inner: TermInner::Bind {
-                                bindings: vars.into(),
-                                expr: Box::new(expr),
-                            },
-                        })
+                        Ok::<_, diag::Error>((expr, vars))
                     },
-                )
+                );
+                let (expr, mut vars) = res?;
+                vars.sort_by(|a, b| order.get_index_of(&b.0).cmp(&order.get_index_of(&a.0)));
+                Ok(Term {
+                    ty: expr.ty,
+                    inner: TermInner::Bind {
+                        bindings: vars.into(),
+                        expr: Box::new(expr),
+                    },
+                })
             }
             ast::ExprInner::Lambda(pat, body) => {
                 // first, allocate a new variable to be used for the arg
@@ -345,7 +393,7 @@ impl Ctx {
             }
             ast::ExprInner::TypeConstructor(ident) => {
                 // spans are kinda wacky but whatever
-                let id = bindings.get_type(&ident, expr.span)?;
+                let id = bindings.get_type(&ident, expr.span, &mut self.ck, level)?;
                 let arg = self.ck.add_var(None, level);
                 let (arg_out, arg_inp) = arg.polarize(&mut self.ck, expr.span);
                 let ret_out = self
@@ -463,28 +511,16 @@ impl Ctx {
                 inner: TermInner::Value(val),
             }),
             ast::ExprInner::Variable(var) => {
-                let var = bindings
-                    .get(&var)
+                let (var, ty, meta) = bindings
+                    .get(&var, expr.span, &mut self.ck, level)?
                     .ok_or_else(|| diag::NameNotFoundError::new(var, expr.span, false))?;
-                let (var, poly, type_id) = match var {
-                    VarType::Mono(var) => (var, false, None),
-                    VarType::Poly(var) => (var, true, None),
-                    VarType::TypeConstructor(var, id) => (var, true, Some(id)),
-                };
-                let ty = self.ck.add_ty(Pos::Var(var), expr.span);
-                let ty = if poly {
-                    self.ck.monomorphize(ty, level)
-                } else {
-                    ty
-                };
-                let term = Term {
-                    inner: TermInner::VarAccess(var),
-                    ty,
-                };
-                if let Some(id) = type_id {
-                    return Ok((term, TermMeta::Type(id)));
-                }
-                Ok(term)
+                return Ok((
+                    Term {
+                        inner: TermInner::VarAccess(var),
+                        ty,
+                    },
+                    meta,
+                ));
             }
         })
         .map(|ret| (ret, TermMeta::None))
@@ -492,7 +528,6 @@ impl Ctx {
 
     pub fn lower_ast(&mut self, ast: ast::Program) -> Result<(Bindings, Scope), diag::Error> {
         let mut bindings = Bindings::default();
-        let mut ret1 = Scope::default();
         let level = 0;
         let (mut pats, exprs) = ast
             .into_iter()
@@ -513,14 +548,19 @@ impl Ctx {
                 })
                 .collect(),
         );
+        let mut scope = Scope::default();
         for (_ident, var, var_inp, expr1) in exprs {
             let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?.0;
             // now direct expr1 to var_inp (assignment)
             self.ck.flow(expr1.ty, var_inp)?;
             // and actually bind this variable
-            ret1.insert(var, expr1);
+            scope.insert(var, expr1);
             // vars.0.push((var, expr1));
         }
+        let order = bindings.orders.pop().unwrap();
+        scope
+            .map
+            .sort_by(|a, _, b, _| order.get_index_of(b).cmp(&order.get_index_of(a)));
         /*for ast::Tld {
             pattern,
             body,
@@ -538,6 +578,6 @@ impl Ctx {
             ret1.insert(var, body);
             ret1.extend(vars);
         }*/
-        Ok((bindings, ret1))
+        Ok((bindings, scope))
     }
 }

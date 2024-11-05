@@ -250,7 +250,7 @@ fn main() {
     let ast = ast1;
     let mut ctx = hir::Ctx::default();
     println!("ast -> hir");
-    let (bindings, scope) = match ctx.lower_ast(ast) {
+    let (mut bindings, scope) = match ctx.lower_ast(ast) {
         Ok(x) => x,
         Err(err) => {
             show_err(&input_file, &text, err);
@@ -263,14 +263,20 @@ fn main() {
     let handle = std::process::Command::new("dot")
         .args(["types.dot", "-Tpng", "-o", "types.png"])
         .spawn();
-    let main_var = bindings.get("main").expect("main not found");
-    let (main_var, poly) = match main_var {
-        hir::VarType::Mono(var) => (var, false),
-        hir::VarType::Poly(var) => (var, true),
-        hir::VarType::TypeConstructor(var, _label) => (var, true),
+    let (main_var, ty, _meta) = match bindings
+        .get("main", Span::default(), &mut ctx.ck, 0)
+        .transpose()
+        .ok_or_else(|| {
+            diag::Error::NameNotFound(diag::NameNotFoundError::new("main", Span::default(), false))
+        })
+        .and_then(|x| x)
+    {
+        Ok(x) => x,
+        Err(err) => {
+            show_err(&input_file, &text, err);
+            std::process::exit(1);
+        }
     };
-    let ty = ctx.ck.add_ty(typeck::Pos::Var(main_var), Span::default());
-    let ty = if poly { ctx.ck.monomorphize(ty, 0) } else { ty };
     println!("hir -> value");
     println!(
         "{:?}",
