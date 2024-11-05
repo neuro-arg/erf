@@ -111,11 +111,15 @@ impl Expr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternInner {
     Variable(String),
+    Tag(String, Span, Box<Pattern>),
 }
 
 impl PatternInner {
     pub fn var(s: impl Into<String>) -> Self {
         Self::Variable(s.into())
+    }
+    pub fn tag(s: impl Into<String>, span: Span, pat: Pattern) -> Self {
+        Self::Tag(s.into(), span, Box::new(pat))
     }
 }
 
@@ -135,6 +139,7 @@ impl PatternInner {
     pub fn label(&self) -> Option<String> {
         match self {
             PatternInner::Variable(x) => Some(x.clone()),
+            PatternInner::Tag(_tag, _span, x) => x.label(),
         }
     }
 }

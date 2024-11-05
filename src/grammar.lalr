@@ -1,10 +1,10 @@
-use super::ast::{self, Expr, LetArm, Pattern};
+use super::{Wrapper, ast::{self, Ident, Expr, LetArm, Pattern}};
 
 grammar(ctx: &mut crate::ParseCtx);
 
 Comment = r"#.*";
 
-Ident: String = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
+Ident: Ident = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
 IntLiteral: String = {
     <r"-?(?:0|[1-9]\d*)"> => String::from(<>),
 };
@@ -131,7 +131,7 @@ Expr: Expr = {
     },
     // 13. lambda
     #[precedence(level="13")] #[assoc(side="right")]
-    <l: @L> <a:Pattern> "=>" Comment* <b:Expr> <r: @R> => {
+    <l: @L> "fun" Comment* <a:Pattern> "=>" Comment* <b:Expr> <r: @R> => {
         ctx.lambda(a, b, (l, r))
     },
     // 14. let
@@ -146,7 +146,7 @@ LetBindingArm: LetArm = {
         let p = ctx.let_pattern_var(x, (l, r));
         ctx.let_arm(p, b, (l, r))
     },
-    <l: @L> <x:Ident> <args:ArgPattern+> <r0: @R> "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
+    <l: @L> <x:Ident> Comment* <args:BasicPattern+> <r0: @R> "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
         let p = ctx.let_pattern_func(x, args, (l, r0));
         ctx.let_arm(p, b, (l, r))
     },
@@ -156,11 +156,15 @@ LetBindingArm: LetArm = {
     }
 };
 
-ArgPattern: Pattern = {
-    <x:Pattern> Comment* => x,
-}
+BasicPattern: Pattern = {
+    "(" Comment* <p:Pattern> ")" Comment* => p,
+    <l: @L> <x:Ident> <r: @R> Comment* => ctx.pattern_var(x, (l, r)),
+};
+IdentCommentSpan: (Ident, (usize, usize)) = {
+    <l: @L> <x:Ident> <r: @R> Comment* => (x, (l, r)),
+};
 Pattern: Pattern = {
-    <l: @L> <x:Ident> <r: @R> => ctx.pattern_var(x, (l, r)),
+    <l: @L> <t:IdentCommentSpan*> <x:BasicPattern> <r: @R> => ctx.pattern_tagged(Wrapper(t), x, (l, r)),
 };
 
 TopLevelDecl: ast::Tld = {

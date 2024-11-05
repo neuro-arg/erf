@@ -47,6 +47,7 @@ pub enum NegPrim {
     Int { signed: bool, bits: u8 },
     Float { bits: u8 },
     Record(String, IdSpan<Self>),
+    Label(LabelId, IdSpan<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -235,6 +236,23 @@ impl TypeCk {
                     self.q.enqueue(*neg_a, *pos_a);
                     // ensure function of type pos_a -> pos_b produces values of type neg_b
                     self.q.enqueue(*pos_b, *neg_b);
+                }
+                (
+                    Pos::Prim(PosPrim::Label(label1, ty1)),
+                    Neg::Prim(NegPrim::Label(label2, ty2)),
+                ) => {
+                    if label1 == label2 {
+                        self.q.enqueue(*ty1, *ty2);
+                    } else {
+                        return Err(diag::TypeError::new(
+                            HumanType::from_pos(self, pos.id()),
+                            HumanType::from_neg(self, neg.id()),
+                        )
+                        .with_hint(diag::TypeHint::UnhandledCase {
+                            case: self.label(*label2).to_owned(),
+                            created: pos.span(),
+                        }));
+                    }
                 }
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;

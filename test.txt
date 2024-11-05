@@ -1,5 +1,6 @@
 # test
 type Test;
-a_wrap = x => Test x;
-main = (f => f 6) a_wrap;
+type Test1;
+a_wrap = fun (Test1 x) => x;
+main = (fun f => f (Test1 (fun x => x))) a_wrap 5;
 

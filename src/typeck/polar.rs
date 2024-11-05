@@ -135,6 +135,7 @@ impl PolarPrimitive for NegPrim {
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
+            Single(std::option::IntoIter<&'a IdSpan<T>>),
             Record(std::option::IntoIter<&'a IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
@@ -142,17 +143,20 @@ impl PolarPrimitive for NegPrim {
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
+                    Self::Single(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
+                    Self::Single(x) => x.next().map(AnyIdRef::Same),
                     Self::Record(x) => x.next().map(AnyIdRef::Same),
                 }
             }
         }
         match self {
+            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
             Self::Record(_, x) => Iter::Record(Some(x).into_iter()),
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => Iter::Default,
         }
@@ -160,6 +164,7 @@ impl PolarPrimitive for NegPrim {
     fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
         enum Iter<'a, T: PolarPrimitive> {
             Default,
+            Single(std::option::IntoIter<&'a mut IdSpan<T>>),
             Record(std::option::IntoIter<&'a mut IdSpan<T>>),
         }
         impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
@@ -167,17 +172,20 @@ impl PolarPrimitive for NegPrim {
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
+                    Self::Single(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
+                    Self::Single(x) => x.next().map(AnyIdMut::Same),
                     Self::Record(x) => x.next().map(AnyIdMut::Same),
                 }
             }
         }
         match self {
+            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
             Self::Record(_, x) => Iter::Record(Some(x).into_iter()),
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => Iter::Default,
         }

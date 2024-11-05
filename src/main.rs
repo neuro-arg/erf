@@ -101,6 +101,20 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn pattern_tagged(
+        &mut self,
+        tags: impl Construct<Vec<(Ident, Span)>>,
+        pat: impl Construct<ast::Pattern>,
+        _span: impl Construct<Span>,
+    ) -> ast::Pattern {
+        let tags = tags.construct(self);
+        let pat = pat.construct(self);
+        tags.into_iter().rev().fold(pat, |pat, (tag, span)| {
+            let mut span1 = pat.span;
+            span1.left = span.left;
+            ast::Pattern::new(ast::PatternInner::tag(tag, span, pat), span1)
+        })
+    }
     pub fn unary(
         &mut self,
         op: ast::UnOp,
@@ -188,6 +202,17 @@ impl Construct<Span> for (usize, usize) {
     }
 }
 
+struct Wrapper<T>(T);
+
+impl<A, B, C: Construct<A>, D: Construct<B>> Construct<Vec<(A, B)>> for Wrapper<Vec<(C, D)>> {
+    fn construct(self, ctx: &mut ParseCtx) -> Vec<(A, B)> {
+        self.0
+            .into_iter()
+            .map(|(a, b)| (a.construct(ctx), b.construct(ctx)))
+            .collect()
+    }
+}
+
 fn show_err(filename: &str, code: &str, err: diag::Error) {
     let cache = (filename, ariadne::Source::from(code));
     err.to_ariadne(
@@ -242,6 +267,7 @@ fn main() {
     let (main_var, poly) = match main_var {
         hir::VarType::Mono(var) => (var, false),
         hir::VarType::Poly(var) => (var, true),
+        hir::VarType::TypeConstructor(var, _label) => (var, true),
     };
     let ty = ctx.ck.add_ty(typeck::Pos::Var(main_var), Span::default());
     let ty = if poly { ctx.ck.monomorphize(ty, 0) } else { ty };

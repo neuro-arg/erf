@@ -137,6 +137,7 @@ impl fmt::Display for HumanType {
 #[derive(Clone, Debug)]
 pub enum TypeHint {
     MissingField { field: String, used: Span },
+    UnhandledCase { case: String, created: Span },
     NoCoercion { value: Span, used: Span },
 }
 
@@ -144,6 +145,7 @@ impl fmt::Display for TypeHint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingField { field, used: _ } => write!(f, "missing field `{field}`"),
+            Self::UnhandledCase { case, created: _ } => write!(f, "missing case `{case}`"),
             Self::NoCoercion { value: _, used: _ } => write!(f, "no coercion defined"),
         }
     }
@@ -401,6 +403,10 @@ impl HumanType {
                 Box::new(Self::from_pos2(ck, a.id(), rec)),
                 Box::new(Self::from_neg2(ck, b.id(), rec)),
             ),
+            Neg::Prim(NegPrim::Label(a, b)) => Self::Tagged(
+                ck.label(*a).to_owned(),
+                Box::new(Self::from_neg2(ck, b.id(), rec)),
+            ),
         };
         if let Some(var) = rec.0.get(&neg.into()).unwrap() {
             HumanType::Recursive(*var, Box::new(ret))
@@ -549,20 +555,27 @@ impl HumanType {
 pub struct NameNotFoundError {
     span: Span,
     name: String,
+    is_type: bool,
 }
 
 impl NameNotFoundError {
-    pub fn new(name: impl Into<String>, span: Span) -> Self {
+    pub fn new(name: impl Into<String>, span: Span, is_type: bool) -> Self {
         Self {
             name: name.into(),
             span,
+            is_type,
         }
     }
 }
 
 impl fmt::Display for NameNotFoundError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "name not found: {}", self.name)
+        write!(
+            f,
+            "{} not found: {}",
+            if self.is_type { "type" } else { "var" },
+            self.name
+        )
     }
 }
 
@@ -664,15 +677,28 @@ impl Error {
                                     .with_message(format!("field `{field}` may be missing")),
                             );
                         }
+                        TypeHint::UnhandledCase { case, created } => {
+                            ariadne = ariadne.with_label(
+                                ariadne::Label::new(resolve(created))
+                                    .with_message(format!("case `{case}` isn't handled")),
+                            );
+                        }
                     }
                 }
                 ariadne
             }
-            Self::NameNotFound(NameNotFoundError { span, name }) => {
-                ariadne.with_message("name not in scope").with_label(
-                    ariadne::Label::new(resolve(span))
-                        .with_message(format!("name `{name}` not found")),
-                )
+            Self::NameNotFound(NameNotFoundError {
+                span,
+                name,
+                is_type,
+            }) => {
+                let s = if *is_type { "type" } else { "name" };
+                ariadne
+                    .with_message(format!("{s} not in scope"))
+                    .with_label(
+                        ariadne::Label::new(resolve(span))
+                            .with_message(format!("{s} `{name}` not found")),
+                    )
             }
             Self::Redefinition(VarRedefinitionError { spans, name }) => {
                 let mut msg = ariadne.with_message(format!("redefinition of `{name}`"));

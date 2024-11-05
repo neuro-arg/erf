@@ -81,9 +81,15 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
         }),
         hir::TermInner::VarAccess(var) => Ok(scope.get(var).unwrap().clone()),
         hir::TermInner::Application(func, expr) => {
-            let func = eval_term(scope, *func)?;
-            let Value::Lambda(mut func_scope, arg, body) = func else {
-                unreachable!("unexpected application to {func:?}, why did this typecheck?");
+            let mut func = eval_term(scope, *func)?;
+            let (mut func_scope, arg, body) = loop {
+                match func {
+                    Value::Tagged(_, x) => func = *x,
+                    Value::Lambda(func_scope, arg, body) => break (func_scope, arg, body),
+                    _ => {
+                        unreachable!("unexpected application to {func:?}, why did this typecheck?");
+                    }
+                }
             };
             let expr = eval_term(scope, *expr)?;
             func_scope.scope(|scope, handle| {
