@@ -44,10 +44,18 @@ pub enum PosPrim {
 pub enum NegPrim {
     Void,
     Bool,
-    Int { signed: bool, bits: u8 },
-    Float { bits: u8 },
+    Int {
+        signed: bool,
+        bits: u8,
+    },
+    Float {
+        bits: u8,
+    },
     Record(String, IdSpan<Self>),
-    Label(LabelId, IdSpan<Self>),
+    Label {
+        cases: BTreeMap<LabelId, (IdSpan<Self>, bool)>,
+        fallthrough: Option<IdSpan<Self>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -239,17 +247,27 @@ impl TypeCk {
                 }
                 (
                     Pos::Prim(PosPrim::Label(label1, ty1)),
-                    Neg::Prim(NegPrim::Label(label2, ty2)),
+                    Neg::Prim(NegPrim::Label { cases, fallthrough }),
                 ) => {
-                    if label1 == label2 {
-                        self.q.enqueue(*ty1, *ty2);
+                    let cases = if let Some((ty2, refutable)) = cases.get(label1) {
+                        Some(*ty2)
+                            .into_iter()
+                            .chain(refutable.then(|| *fallthrough).flatten())
                     } else {
+                        None.into_iter().chain(*fallthrough)
+                    };
+                    let mut handled = false;
+                    for case in cases {
+                        self.q.enqueue(*ty1, case);
+                        handled = true;
+                    }
+                    if !handled {
                         return Err(diag::TypeError::new(
                             HumanType::from_pos(self, pos.id()),
                             HumanType::from_neg(self, neg.id()),
                         )
                         .with_hint(diag::TypeHint::UnhandledCase {
-                            case: self.label(*label2).to_owned(),
+                            case: self.label(*label1).to_owned(),
                             created: pos.span(),
                         }));
                     }

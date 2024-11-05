@@ -176,7 +176,17 @@ impl Bindings {
                 let tag = self.get_type(&tag, span, ck, level)?;
                 let var1 = ck.add_var(pat.label(), level);
                 let (var1_out, var1_inp) = var1.polarize(ck, pat.span);
-                let neg = ck.add_ty(Neg::Prim(NegPrim::Label(tag, var1_inp)), pat.span);
+                let neg = ck.add_ty(
+                    Neg::Prim(NegPrim::Label {
+                        cases: {
+                            let mut cases = BTreeMap::new();
+                            cases.insert(tag, (var1_inp, false));
+                            cases
+                        },
+                        fallthrough: None,
+                    }),
+                    pat.span,
+                );
                 ck.flow(var_out, neg)?;
                 vars.push((
                     var1,

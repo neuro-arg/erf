@@ -403,10 +403,22 @@ impl HumanType {
                 Box::new(Self::from_pos2(ck, a.id(), rec)),
                 Box::new(Self::from_neg2(ck, b.id(), rec)),
             ),
-            Neg::Prim(NegPrim::Label(a, b)) => Self::Tagged(
-                ck.label(*a).to_owned(),
-                Box::new(Self::from_neg2(ck, b.id(), rec)),
-            ),
+            Neg::Prim(NegPrim::Label { cases, fallthrough }) => {
+                let mut val = Self::Bot;
+                for (label, (ty, _refutable)) in cases {
+                    val = Self::union2(
+                        val,
+                        Self::Tagged(
+                            ck.label(*label).to_owned(),
+                            Box::new(Self::from_neg2(ck, ty.id(), rec)),
+                        ),
+                    );
+                }
+                if let Some(fallback) = fallthrough {
+                    val = Self::union2(val, Self::from_neg2(ck, fallback.id(), rec));
+                }
+                val
+            }
         };
         if let Some(var) = rec.0.get(&neg.into()).unwrap() {
             HumanType::Recursive(*var, Box::new(ret))
@@ -438,9 +450,7 @@ impl HumanType {
                 *out.entry(*a).or_default() += 1;
                 b.collect_vars(out);
             }
-            Self::Tagged(_, b) => {
-                b.collect_vars(out);
-            }
+            Self::Tagged(_, b) => b.collect_vars(out),
             Self::Union(x) | Self::Intersection(x) => x.iter().for_each(|x| x.collect_vars(out)),
         }
     }

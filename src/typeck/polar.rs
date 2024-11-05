@@ -3,7 +3,7 @@ use std::hash::Hash;
 
 use indexmap::IndexSet;
 
-use crate::{util::IdSpan, Span};
+use crate::{typeck::LabelId, util::IdSpan, Span};
 
 use super::{NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
 
@@ -48,13 +48,13 @@ impl PolarPrimitive for PosPrim {
         &var.union
     }
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
-        enum Iter<'a, T: PolarPrimitive> {
+        enum Iter<'a> {
             Default,
-            Single(std::option::IntoIter<&'a IdSpan<T>>),
-            Record(std::collections::btree_map::Values<'a, String, IdSpan<T>>),
+            Single(std::option::IntoIter<&'a IdSpan<PosPrim>>),
+            Record(std::collections::btree_map::Values<'a, String, IdSpan<PosPrim>>),
         }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = AnyIdRef<'a, T>;
+        impl<'a> Iterator for Iter<'a> {
+            type Item = AnyIdRef<'a, PosPrim>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -82,13 +82,13 @@ impl PolarPrimitive for PosPrim {
         }
     }
     fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
-        enum Iter<'a, T: PolarPrimitive> {
+        enum Iter<'a> {
             Default,
-            Single(std::option::IntoIter<&'a mut IdSpan<T>>),
-            Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<T>>),
+            Single(std::option::IntoIter<&'a mut IdSpan<PosPrim>>),
+            Record(std::collections::btree_map::ValuesMut<'a, String, IdSpan<PosPrim>>),
         }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = AnyIdMut<'a, T>;
+        impl<'a> Iterator for Iter<'a> {
+            type Item = AnyIdMut<'a, PosPrim>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
@@ -133,59 +133,101 @@ impl PolarPrimitive for NegPrim {
         &var.inter
     }
     fn ids(&self) -> impl '_ + Iterator<Item = AnyIdRef<Self>> {
-        enum Iter<'a, T: PolarPrimitive> {
+        enum Iter<'a, F: FnMut(&'a (IdSpan<NegPrim>, bool)) -> &'a IdSpan<NegPrim>> {
             Default,
-            Single(std::option::IntoIter<&'a IdSpan<T>>),
-            Record(std::option::IntoIter<&'a IdSpan<T>>),
+            Label(
+                std::iter::Chain<
+                    std::iter::Map<
+                        std::collections::btree_map::Values<'a, LabelId, (IdSpan<NegPrim>, bool)>,
+                        F,
+                    >,
+                    std::option::IntoIter<&'a IdSpan<NegPrim>>,
+                >,
+            ),
+            Record(std::option::IntoIter<&'a IdSpan<NegPrim>>),
         }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = AnyIdRef<'a, T>;
+        impl<'a, F: FnMut(&'a (IdSpan<NegPrim>, bool)) -> &'a IdSpan<NegPrim>> Iterator for Iter<'a, F> {
+            type Item = AnyIdRef<'a, NegPrim>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
-                    Self::Single(x) => x.size_hint(),
+                    Self::Label(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Single(x) => x.next().map(AnyIdRef::Same),
+                    Self::Label(x) => x.next().map(AnyIdRef::Same),
                     Self::Record(x) => x.next().map(AnyIdRef::Same),
                 }
             }
         }
         match self {
-            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
+            Self::Label { cases, fallthrough } => Iter::Label(
+                cases
+                    .values()
+                    .map({
+                        fn fst(x: &(IdSpan<NegPrim>, bool)) -> &IdSpan<NegPrim> {
+                            &x.0
+                        }
+                        fst
+                    })
+                    .chain(fallthrough.as_ref()),
+            ),
             Self::Record(_, x) => Iter::Record(Some(x).into_iter()),
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => Iter::Default,
         }
     }
     fn ids_mut(&mut self) -> impl '_ + Iterator<Item = AnyIdMut<Self>> {
-        enum Iter<'a, T: PolarPrimitive> {
+        enum Iter<'a, F: FnMut(&'a mut (IdSpan<NegPrim>, bool)) -> &'a mut IdSpan<NegPrim>> {
             Default,
-            Single(std::option::IntoIter<&'a mut IdSpan<T>>),
-            Record(std::option::IntoIter<&'a mut IdSpan<T>>),
+            Label(
+                std::iter::Chain<
+                    std::iter::Map<
+                        std::collections::btree_map::ValuesMut<
+                            'a,
+                            LabelId,
+                            (IdSpan<NegPrim>, bool),
+                        >,
+                        F,
+                    >,
+                    std::option::IntoIter<&'a mut IdSpan<NegPrim>>,
+                >,
+            ),
+            Record(std::option::IntoIter<&'a mut IdSpan<NegPrim>>),
         }
-        impl<'a, T: PolarPrimitive> Iterator for Iter<'a, T> {
-            type Item = AnyIdMut<'a, T>;
+        impl<'a, F: FnMut(&'a mut (IdSpan<NegPrim>, bool)) -> &'a mut IdSpan<NegPrim>> Iterator
+            for Iter<'a, F>
+        {
+            type Item = AnyIdMut<'a, NegPrim>;
             fn size_hint(&self) -> (usize, Option<usize>) {
                 match self {
                     Self::Default => (0, Some(0)),
-                    Self::Single(x) => x.size_hint(),
+                    Self::Label(x) => x.size_hint(),
                     Self::Record(x) => x.size_hint(),
                 }
             }
             fn next(&mut self) -> Option<Self::Item> {
                 match self {
                     Self::Default => None,
-                    Self::Single(x) => x.next().map(AnyIdMut::Same),
+                    Self::Label(x) => x.next().map(AnyIdMut::Same),
                     Self::Record(x) => x.next().map(AnyIdMut::Same),
                 }
             }
         }
         match self {
-            Self::Label(_, id) => Iter::Single(Some(id).into_iter()),
+            Self::Label { cases, fallthrough } => Iter::Label(
+                cases
+                    .values_mut()
+                    .map({
+                        fn fst(x: &mut (IdSpan<NegPrim>, bool)) -> &mut IdSpan<NegPrim> {
+                            &mut x.0
+                        }
+                        fst
+                    })
+                    .chain(fallthrough.as_mut()),
+            ),
             Self::Record(_, x) => Iter::Record(Some(x).into_iter()),
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => Iter::Default,
         }
