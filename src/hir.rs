@@ -285,10 +285,10 @@ impl Ctx {
         let def = defs.next().unwrap();
         match def.pattern.inner {
             LetPatternInner::Val => {
-                if defs.next().is_some() {
+                if let Some(def1) = defs.next() {
                     return Err(diag::VarRedefinitionError::new(
                         ident,
-                        [def.pattern.span]
+                        [def.pattern.span, def1.pattern.span]
                             .into_iter()
                             .chain(defs.map(|x| x.pattern.span))
                             .collect(),
@@ -304,10 +304,10 @@ impl Ctx {
                 ))
             }
             LetPatternInner::Func(args) => {
-                if defs.next().is_some() {
+                if let Some(def1) = defs.next() {
                     return Err(diag::VarRedefinitionError::new(
                         ident,
-                        [def.pattern.span]
+                        [def.pattern.span, def1.pattern.span]
                             .into_iter()
                             .chain(defs.map(|x| x.pattern.span))
                             .collect(),
