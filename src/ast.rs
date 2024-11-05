@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::Span;
 
 pub type Ident = String;
+pub type QualifiedIdent = Vec<String>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -44,7 +45,7 @@ pub enum BinOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprInner {
     Literal(LiteralKind, String),
-    Variable(Ident),
+    Variable(QualifiedIdent),
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Lambda(Pattern, Box<Expr>),
@@ -75,7 +76,7 @@ impl ExprInner {
     pub fn literal(kind: LiteralKind, s: impl Into<String>) -> Self {
         Self::Literal(kind, s.into())
     }
-    pub fn var(s: impl Into<String>) -> Self {
+    pub fn var(s: impl Into<QualifiedIdent>) -> Self {
         Self::Variable(s.into())
     }
     pub fn unary(op: UnOp, expr: impl Into<Box<Expr>>) -> Self {

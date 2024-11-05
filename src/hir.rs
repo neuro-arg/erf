@@ -546,8 +546,24 @@ impl Ctx {
                 inner: TermInner::Value(val),
             }),
             ast::ExprInner::Variable(var) => {
+                let var = match *var.as_slice() {
+                    [ref x] => x,
+                    [ref x, ..] => {
+                        let len = x.len();
+                        return Err(diag::NameNotFoundError::new(
+                            x,
+                            Span {
+                                right: expr.span.left + len,
+                                ..expr.span
+                            },
+                            false,
+                        )
+                        .into());
+                    }
+                    _ => unreachable!(),
+                };
                 let (var, ty, meta) = bindings
-                    .get(&var, expr.span, &mut self.ck, level)?
+                    .get(var, expr.span, &mut self.ck, level)?
                     .ok_or_else(|| diag::NameNotFoundError::new(var, expr.span, false))?;
                 return Ok((
                     Term {

@@ -1,10 +1,20 @@
-use super::{Wrapper, ast::{self, Ident, Expr, LetArm, Pattern}};
+use super::{Wrapper, ast::{self, Ident, QualifiedIdent, Expr, LetArm, Pattern}};
 
 grammar(ctx: &mut crate::ParseCtx);
 
 Comment = r"#.*";
 
 Ident: Ident = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
+Namespace: Ident = {
+    <x:Ident> "::" => x,
+};
+QualifiedIdent: QualifiedIdent = {
+    <n:Namespace*> <x:Ident> => {
+	let mut n = n;
+    	n.push(x);
+	n
+    },
+};
 IntLiteral: String = {
     <r"-?(?:0|[1-9]\d*)"> => String::from(<>),
 };
@@ -12,8 +22,8 @@ FloatLiteral: String =
     <r"-?(?:0|[1-9]\d*)\.\d*(?:[eE][+-]?\d+)?"> => String::from(<>);
 
 VarOrLit: Expr = {
-    <l: @L> <x:Ident> <r: @R> => match x.as_str() {
-        "false" | "true" => ctx.expr_literal(ast::LiteralKind::Bool, x, (l, r)),
+    <l: @L> <x:QualifiedIdent> <r: @R> => match x.as_slice() {
+        &[ref x] if matches!(x.as_str(), "false" | "true") => ctx.expr_literal(ast::LiteralKind::Bool, x.clone(), (l, r)),
         _ => ctx.expr_var(x, (l, r))
     },
     <l: @L> <x:FloatLiteral> <r: @R> => ctx.expr_literal(ast::LiteralKind::Float, x, (l, r)),

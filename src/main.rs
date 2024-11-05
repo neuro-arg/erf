@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use ast::{Expr, ExprInner, Ident, LetArm, LiteralKind};
+use ast::{Expr, ExprInner, Ident, LetArm, LiteralKind, QualifiedIdent};
 
 mod ast;
 mod diag;
@@ -55,7 +55,11 @@ impl ParseCtx {
             span.construct(self),
         )
     }
-    pub fn expr_var(&mut self, content: impl Construct<Ident>, span: impl Construct<Span>) -> Expr {
+    pub fn expr_var(
+        &mut self,
+        content: impl Construct<QualifiedIdent>,
+        span: impl Construct<Span>,
+    ) -> Expr {
         Expr::new(
             ExprInner::var(content.construct(self)),
             span.construct(self),
