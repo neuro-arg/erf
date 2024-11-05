@@ -6,3 +6,9 @@ that is, i will have to throw away graphviz debug output but error diagnostics w
 
 for best performance, figure out how to ensure ConstraintGraph::constraints hashes ids semantically
 (maybe split ids into "shape id" and "type id", and use OrderedMap<ShapeId, TypeId>?)
+
+TODO: let polymorphism (disabled for now)
+type schemes can get instantiated with type variables by copying them to a lower level with TypeCk::monomorphize
+the issue is twofold
+first, the type needs to be fully ready before copying it, we can't add anything to the type scheme after that (unless we make it so the monomorphized type can receive additional bounds from the type scheme later, but this is slightly annoying because it requires storing a mapping from poly to mono for each type variable in each instantiation of the type scheme)
+second, the type scheme may refer to itself, and in that case it must refer to the type scheme itself without instantiating the type - this is trivial with levels, but it's a thing to take care of nonetheless

@@ -118,11 +118,13 @@ impl Bindings {
         let Some((var, lvl)) = self.ck_map.get(s).and_then(|x| x.last()) else {
             return Ok(None);
         };
-        let (var, poly, type_id) = match var {
+        let (var, _poly, type_id) = match var {
             VarType::Mono(var) => (var, false, None),
             VarType::Poly(var) => (var, true, None),
             VarType::TypeConstructor(var, id) => (var, true, Some(id)),
         };
+        // TODO: remove the following line
+        let poly = false;
         if let Some(lvl) = lvl {
             if !self.orders.is_empty() {
                 self.orders[*lvl].insert(*var);
