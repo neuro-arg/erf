@@ -561,23 +561,6 @@ impl Ctx {
         scope
             .map
             .sort_by(|a, _, b, _| order.get_index_of(b).cmp(&order.get_index_of(a)));
-        /*for ast::Tld {
-            pattern,
-            body,
-            span: _,
-        } in ast
-        {
-            let var = self.ck.add_var(Some(pattern.label());
-            let (var_out, var_inp) = var.polarize(&mut self.ck, pattern.span);
-            let (vars, _) = bindings.insert_pattern_let(pattern, var, var_out);
-            tmp.push((body, var, var_inp, vars));
-        }
-        for (body, var, var_inp, vars) in tmp {
-            let body = self.lower_expr(&mut bindings, body)?;
-            self.ck.flow(body.ty, var_inp)?;
-            ret1.insert(var, body);
-            ret1.extend(vars);
-        }*/
         Ok((bindings, scope))
     }
 }
