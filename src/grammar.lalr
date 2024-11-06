@@ -4,13 +4,19 @@ grammar(ctx: &mut crate::ParseCtx);
 
 Comment = r"#.*";
 
+Comma<T>: Vec<T> = {
+    <mut v:(<T> "," Comment*)*> <e:T?> => {
+    	v.extend(e);
+        v
+    }
+};
+
 Ident: Ident = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
 Namespace: Ident = {
-    <x:Ident> "::" => x,
+    <Ident> "::",
 };
 QualifiedIdent: QualifiedIdent = {
-    <n:Namespace*> <x:Ident> => {
-	let mut n = n;
+    <mut n:Namespace*> <x:Ident> => {
     	n.push(x);
 	n
     },
@@ -30,19 +36,26 @@ VarOrLit: Expr = {
     <l: @L> <x:IntLiteral> <r: @R> => ctx.expr_literal(ast::LiteralKind::Int, x, (l, r)),
 };
 
-Term: Expr = {
+BasicTerm = {
     <VarOrLit> Comment*,
+};
+
+Term: Expr = {
+    <BasicTerm>,
     "(" Comment* <Expr> ")" Comment*,
+    // call
+    <l: @L> <a:Term> "(" <b:Comma<Expr>> ")" <r: @R> => {
+        ctx.call(a, b, (l, r))
+    },
 };
 
 Expr: Expr = {
     // 0. basic term
     #[precedence(level="0")]
     <Term>,
-    // 1. call
     #[precedence(level="1")] #[assoc(side="left")]
-    <l: @L> <a:Expr> <b:Expr> <r: @R> => {
-        ctx.binary(ast::BinOp::Call, a, b, (l, r))
+    <l: @L> <a:Expr> <b:BasicTerm> <r: @R> => {
+        ctx.call(a, vec![b], (l, r))
     },
     // 2. unary ops
     #[precedence(level="2")]
@@ -145,7 +158,7 @@ Expr: Expr = {
     },
     // 13. lambda
     #[precedence(level="13")] #[assoc(side="right")]
-    <l: @L> "fun" Comment* <a:Pattern> "=>" Comment* <b:Expr> <r: @R> => {
+    <l: @L> "fn" Comment* "(" Comment* <a:Comma<Pattern>> ")" Comment* "=>" Comment* <b:Expr> <r: @R> => {
         ctx.lambda(a, b, (l, r))
     },
     // 14. let
@@ -160,7 +173,7 @@ LetBindingArm: LetArm = {
         let p = ctx.let_pattern_var(x, (l, r));
         ctx.let_arm(p, b, (l, r))
     },
-    <l: @L> <x:Ident> Comment* <args:BasicPattern+> <r0: @R> "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
+    <l: @L> <x:Ident> Comment* "(" Comment* <args:Comma<Pattern>> ")" <r0: @R> Comment* "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
         let p = ctx.let_pattern_func(x, args, (l, r0));
         ctx.let_arm(p, b, (l, r))
     },
@@ -171,7 +184,7 @@ LetBindingArm: LetArm = {
 };
 
 BasicPattern: Pattern = {
-    "(" Comment* <p:Pattern> ")" Comment* => p,
+    "(" Comment* <Pattern> ")" Comment*,
     <l: @L> <x:Ident> <r: @R> Comment* => ctx.pattern_var(x, (l, r)),
 };
 IdentCommentSpan: (Ident, (usize, usize)) = {
@@ -182,8 +195,8 @@ Pattern: Pattern = {
 };
 
 TopLevelDecl: ast::Tld = {
-    <b:LetBindingArm> => {
-        ctx.tld(b)
+    <LetBindingArm> => {
+        ctx.tld(<>)
     }
 };
 

@@ -20,7 +20,6 @@ pub enum UnOp {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BinOp {
-    Call,
     Pow,
     Mul,
     Div,
@@ -49,7 +48,8 @@ pub enum ExprInner {
     Variable(QualifiedIdent),
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
-    Lambda(Pattern, Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>),
+    Lambda(Vec<Pattern>, Box<Expr>),
     LetRec(BTreeMap<Ident, Vec<LetArm>>, Box<Expr>),
     TypeConstructor(Ident),
 }
@@ -86,8 +86,8 @@ impl ExprInner {
     pub fn binary(op: BinOp, lhs: impl Into<Box<Expr>>, rhs: impl Into<Box<Expr>>) -> Self {
         Self::BinOp(op, lhs.into(), rhs.into())
     }
-    pub fn lambda(lhs: impl Into<Pattern>, rhs: impl Into<Box<Expr>>) -> Self {
-        Self::Lambda(lhs.into(), rhs.into())
+    pub fn lambda(lhs: Vec<Pattern>, rhs: impl Into<Box<Expr>>) -> Self {
+        Self::Lambda(lhs, rhs.into())
     }
     pub fn letrec(target: impl IntoIterator<Item = LetArm>, body: impl Into<Box<Expr>>) -> Self {
         let mut map = BTreeMap::<_, Vec<_>>::new();

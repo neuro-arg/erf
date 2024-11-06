@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fmt::{self, Display, Write},
 };
 
@@ -42,7 +42,7 @@ pub enum HumanType {
     },
     Tagged(String, Box<HumanType>),
     Record(BTreeMap<String, HumanType>),
-    Func(Box<HumanType>, Box<HumanType>),
+    Func(Vec<HumanType>, Box<HumanType>),
     Recursive(TypeVar, Box<HumanType>),
     Var(TypeVar),
     Union(Vec<HumanType>),
@@ -87,7 +87,20 @@ impl fmt::Display for HumanType {
             } => write!(f, "u{bits}"),
             Self::Float { bits: None } => f.write_str("float"),
             Self::Float { bits: Some(bits) } => write!(f, "f{bits}"),
-            Self::Func(a, b) => write!(f, "({a} -> {b})"),
+            Self::Func(a, b) => {
+                f.write_str("fn(")?;
+                let mut first = true;
+                for x in a {
+                    if first {
+                        first = false;
+                    } else {
+                        f.write_str(", ")?;
+                    }
+                    x.fmt(f)?;
+                }
+                f.write_str(") -> ")?;
+                b.fmt(f)
+            }
             Self::Record(fields) => {
                 f.write_str("{")?;
                 let mut is_first = true;
@@ -136,17 +149,32 @@ impl fmt::Display for HumanType {
 
 #[derive(Clone, Debug)]
 pub enum TypeHint {
-    MissingField { field: String, used: Span },
-    UnhandledCase { case: String, created: Span },
-    NoCoercion { value: Span, used: Span },
+    ArityMismatch {
+        count: usize,
+        used: Span,
+        declared: Vec<(usize, Span)>,
+    },
+    MissingField {
+        field: String,
+        used: Span,
+    },
+    UnhandledCase {
+        case: String,
+        created: Span,
+    },
+    NoCoercion {
+        value: Span,
+        used: Span,
+    },
 }
 
 impl fmt::Display for TypeHint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingField { field, used: _ } => write!(f, "missing field `{field}`"),
-            Self::UnhandledCase { case, created: _ } => write!(f, "missing case `{case}`"),
-            Self::NoCoercion { value: _, used: _ } => write!(f, "no coercion defined"),
+            Self::ArityMismatch { count, .. } => write!(f, "arity mismatch ({count})"),
+            Self::MissingField { field, .. } => write!(f, "missing field `{field}`"),
+            Self::UnhandledCase { case, .. } => write!(f, "missing case `{case}`"),
+            Self::NoCoercion { .. } => write!(f, "no coercion defined"),
         }
     }
 }
@@ -341,10 +369,16 @@ impl HumanType {
                     Self::Var(i)
                 }
             }
-            Pos::Func(a, b) => Self::Func(
-                Box::new(Self::from_neg2(ck, a.id(), rec)),
-                Box::new(Self::from_pos2(ck, b.id(), rec)),
-            ),
+            Pos::Prim(PosPrim::Func(cases)) => cases
+                .values()
+                .map(|(a, b)| {
+                    Self::Func(
+                        a.iter().map(|a| Self::from_neg2(ck, a.id(), rec)).collect(),
+                        Box::new(Self::from_pos2(ck, b.id(), rec)),
+                    )
+                })
+                .fold(Self::Bot, Self::union2),
+
             Pos::Prim(PosPrim::Label(a, b)) => Self::Tagged(
                 ck.label(*a).to_owned(),
                 Box::new(Self::from_pos2(ck, b.id(), rec)),
@@ -399,8 +433,8 @@ impl HumanType {
                     Self::Var(i)
                 }
             }
-            Neg::Func(a, b) => Self::Func(
-                Box::new(Self::from_pos2(ck, a.id(), rec)),
+            Neg::Prim(NegPrim::Func(a, b)) => Self::Func(
+                a.iter().map(|a| Self::from_pos2(ck, a.id(), rec)).collect(),
                 Box::new(Self::from_neg2(ck, b.id(), rec)),
             ),
             Neg::Prim(NegPrim::Label { cases, fallthrough }) => {
@@ -443,7 +477,9 @@ impl HumanType {
             | Self::Float { .. } => {}
             Self::Record(x) => x.values().for_each(|x| x.collect_vars(out)),
             Self::Func(a, b) => {
-                a.collect_vars(out);
+                for x in a {
+                    x.collect_vars(out);
+                }
                 b.collect_vars(out);
             }
             Self::Recursive(a, b) => {
@@ -453,49 +489,6 @@ impl HumanType {
             Self::Tagged(_, b) => b.collect_vars(out),
             Self::Union(x) | Self::Intersection(x) => x.iter().for_each(|x| x.collect_vars(out)),
         }
-    }
-    fn collect_annihilation_targets(&self, vars: &HashMap<TypeVar, usize>) -> Vec<TypeVar> {
-        match self {
-            Self::Var(x) => vec![*x],
-            Self::Intersection(x) | Self::Union(x) => x
-                .iter()
-                .filter_map(|x| if let Self::Var(x) = x { Some(*x) } else { None })
-                .filter(|var| *vars.get(var).unwrap() == 2)
-                .collect(),
-            _ => vec![],
-        }
-    }
-    fn annihilate_targets(&mut self, targets: &HashSet<TypeVar>, pos: bool) {
-        match self {
-            Self::Var(x) if targets.contains(x) => *self = if pos { Self::Bot } else { Self::Top },
-            Self::Intersection(x) | Self::Union(x) => {
-                x.retain(|x| {
-                    if let Self::Var(x) = x {
-                        !targets.contains(x)
-                    } else {
-                        true
-                    }
-                });
-            }
-            _ => {}
-        }
-    }
-    fn annihilate_func(a: &mut Self, b: &mut Self, vars: &HashMap<TypeVar, usize>, pos: bool) {
-        let arg_direct_vars = a.collect_annihilation_targets(vars);
-        if arg_direct_vars.is_empty() {
-            return;
-        }
-        let ret_direct_vars = b.collect_annihilation_targets(vars);
-        if ret_direct_vars.is_empty() {
-            return;
-        }
-        let ret_direct_vars: HashSet<_> = ret_direct_vars.into_iter().collect();
-        let to_annihilate = arg_direct_vars
-            .into_iter()
-            .filter(|x| ret_direct_vars.contains(x))
-            .collect();
-        a.annihilate_targets(&to_annihilate, !pos);
-        b.annihilate_targets(&to_annihilate, pos);
     }
     fn direct_contains(&self, var: TypeVar) -> bool {
         match self {
@@ -539,14 +532,10 @@ impl HumanType {
                     _ => Self::Intersection(v),
                 }
             }
-            Self::Func(a, b) => {
-                let mut a = *a;
-                let mut b = *b;
-                Self::annihilate_func(&mut a, &mut b, vars, pos);
-                let a = a.simplify2(vars, !pos);
-                let b = b.simplify2(vars, pos);
-                Self::Func(Box::new(a), Box::new(b))
-            }
+            Self::Func(a, b) => Self::Func(
+                a.into_iter().map(|x| x.simplify2(vars, pos)).collect(),
+                Box::new(b.simplify2(vars, pos)),
+            ),
             Self::Recursive(a, b) => {
                 let b = b.simplify2(vars, pos);
                 Self::Recursive(a, Box::new(b))
@@ -668,6 +657,26 @@ impl Error {
                 let mut ariadne = ariadne.with_message("type mismatch");
                 for hint in &hints.0 {
                     match hint {
+                        TypeHint::ArityMismatch {
+                            count,
+                            used,
+                            declared,
+                        } => {
+                            ariadne = ariadne.with_label(
+                                ariadne::Label::new(resolve(used))
+                                    .with_message(format!(
+                                        "can't call this function with {count} arguments"
+                                    ))
+                                    .with_order(-1),
+                            );
+                            for (count, decl) in declared {
+                                ariadne = ariadne.with_label(
+                                    ariadne::Label::new(resolve(decl)).with_message(format!(
+                                        "function declared with {count} args here"
+                                    )),
+                                );
+                            }
+                        }
                         TypeHint::NoCoercion { value, used } => {
                             ariadne = ariadne.with_label(
                                 ariadne::Label::new(resolve(value))

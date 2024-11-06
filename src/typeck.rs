@@ -32,12 +32,22 @@ impl VarId {
 pub enum PosPrim {
     Void,
     Bool,
-    Int { signed: bool, bits: u8 },
-    Float { bits: u8 },
-    IntLiteral { signed: bool, bits: u8 },
+    Int {
+        signed: bool,
+        bits: u8,
+    },
+    Float {
+        bits: u8,
+    },
+    IntLiteral {
+        signed: bool,
+        bits: u8,
+    },
     FloatLiteral,
     Record(BTreeMap<String, IdSpan<Self>>),
     Label(LabelId, IdSpan<Self>),
+    /// Map from argc to arg types
+    Func(BTreeMap<usize, (Vec<IdSpan<NegPrim>>, IdSpan<Self>)>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -56,13 +66,13 @@ pub enum NegPrim {
         cases: BTreeMap<LabelId, (IdSpan<Self>, bool)>,
         fallthrough: Option<IdSpan<Self>>,
     },
+    Func(Vec<IdSpan<PosPrim>>, IdSpan<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PolarType<T: PolarPrimitive> {
     Prim(T),
     Var(VarId),
-    Func(IdSpan<T::Inverse>, IdSpan<T>),
 }
 
 pub type Pos = PolarType<PosPrim>;
@@ -239,11 +249,39 @@ impl TypeCk {
                         }));
                     }
                 }
-                (Pos::Func(pos_a, pos_b), Neg::Func(neg_a, neg_b)) => {
-                    // ensure function of type pos_a -> pos_b can consume values of type neg_a
-                    self.q.enqueue(*neg_a, *pos_a);
-                    // ensure function of type pos_a -> pos_b produces values of type neg_b
-                    self.q.enqueue(*pos_b, *neg_b);
+                (Pos::Prim(PosPrim::Func(cases)), Neg::Prim(NegPrim::Func(neg_a, neg_b))) => {
+                    if let Some((pos_a, pos_b)) = cases.get(&neg_a.len()) {
+                        // ensure function of type pos_a -> pos_b can consume values of type neg_a
+                        for (neg, pos) in neg_a.iter().zip(pos_a.iter()) {
+                            self.q.enqueue(*neg, *pos);
+                        }
+                        // ensure function of type pos_a -> pos_b produces values of type neg_b
+                        self.q.enqueue(*pos_b, *neg_b);
+                    } else {
+                        // arity mismatch
+                        return Err(diag::TypeError::new(
+                            HumanType::from_pos(self, pos.id()),
+                            HumanType::from_neg(self, neg.id()),
+                        )
+                        .with_hint(diag::TypeHint::ArityMismatch {
+                            count: neg_a.len(),
+                            declared: cases
+                                .iter()
+                                .map(|(count, x)| {
+                                    let first_span = x.0.first().unwrap().span();
+                                    let last_span = x.0.last().unwrap().span();
+                                    (
+                                        *count,
+                                        Span {
+                                            right: last_span.right,
+                                            ..first_span
+                                        },
+                                    )
+                                })
+                                .collect(),
+                            used: neg.span(),
+                        }));
+                    }
                 }
                 (
                     Pos::Prim(PosPrim::Label(label1, ty1)),

@@ -23,7 +23,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Lambda(VarId, Box<Term>),
+    Lambda(Vec<VarId>, Box<Term>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -39,7 +39,7 @@ pub enum VarType {
 
 #[derive(Clone, Debug)]
 pub enum TermInner {
-    Application(Box<Term>, Box<Term>),
+    Application(Box<Term>, Vec<Term>),
     Bind {
         bindings: Box<[(VarId, Term)]>,
         expr: Box<Term>,
@@ -326,15 +326,10 @@ impl Ctx {
                     ));
                 }
                 let mut lambda = def.body;
-                for arg in args.into_iter().rev() {
-                    lambda = Expr {
-                        span: Span {
-                            left: arg.span.left,
-                            ..lambda.span
-                        },
-                        inner: ast::ExprInner::Lambda(arg, Box::new(lambda)),
-                    };
-                }
+                lambda = Expr {
+                    span: def.span,
+                    inner: ast::ExprInner::Lambda(args, Box::new(lambda)),
+                };
                 let var = self.ck.add_var(Some(ident.clone()), level + 1);
                 let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
                 Ok((
@@ -394,18 +389,30 @@ impl Ctx {
                     },
                 })
             }
-            ast::ExprInner::Lambda(pat, body) => {
-                // first, allocate a new variable to be used for the arg
-                let arg = self.ck.add_var(pat.label(), level);
-                // its span is to be the pattern's span
-                let (arg_out, arg_inp) = arg.polarize(&mut self.ck, pat.span);
-                let tmp = bindings.insert_pattern(pat, arg, arg_out, &mut self.ck, level)?;
-                bindings.new_scope(tmp, |bindings, vars| {
+            ast::ExprInner::Lambda(pats, body) => {
+                let mut arg_inps = Vec::new();
+                let mut args = Vec::new();
+                let mut tmp0 = Vec::new();
+                let mut tmp1 = Vec::new();
+                for pat in pats {
+                    // first, allocate a new variable to be used for the arg
+                    let arg = self.ck.add_var(pat.label(), level);
+                    // its span is to be the pattern's span
+                    let (arg_out, arg_inp) = arg.polarize(&mut self.ck, pat.span);
+                    let tmp = bindings.insert_pattern(pat, arg, arg_out, &mut self.ck, level)?;
+                    arg_inps.push(arg_inp);
+                    args.push(arg);
+                    tmp0.extend(tmp.0);
+                    tmp1.extend(tmp.1);
+                }
+                bindings.new_scope((tmp0, tmp1), |bindings, vars| {
                     let func_span = expr.span;
                     // now, lower the body with that var assigned
                     let body1 = self.lower_expr(bindings, *body, level)?.0;
                     // the type will be a function that takes arg's type and returns body's type
-                    let ty = Pos::Func(arg_inp, body1.ty);
+                    let mut ty = BTreeMap::new();
+                    ty.insert(arg_inps.len(), (arg_inps, body1.ty));
+                    let ty = Pos::Prim(PosPrim::Func(ty));
                     // its span will be the function's span
                     let ty = self.ck.add_ty(ty, func_span);
                     // if new vars were created during pattern destructuring, bind them
@@ -422,7 +429,7 @@ impl Ctx {
                     };
                     Ok(Term {
                         ty,
-                        inner: TermInner::Value(Value::Lambda(arg, Box::new(expr1))),
+                        inner: TermInner::Value(Value::Lambda(args, Box::new(expr1))),
                     })
                 })
             }
@@ -434,12 +441,14 @@ impl Ctx {
                 let ret_out = self
                     .ck
                     .add_ty(Pos::Prim(PosPrim::Label(id, arg_out)), expr.span);
-                let ty = Pos::Func(arg_inp, ret_out);
+                let mut ty = BTreeMap::new();
+                ty.insert(1, (vec![arg_inp], ret_out));
+                let ty = Pos::Prim(PosPrim::Func(ty));
                 let ty = self.ck.add_ty(ty, expr.span);
                 return Ok((
                     Term {
                         inner: TermInner::Value(Value::Lambda(
-                            arg,
+                            vec![arg],
                             Box::new(Term {
                                 inner: TermInner::AttachTag(
                                     id,
@@ -456,38 +465,43 @@ impl Ctx {
                     TermMeta::Type(id),
                 ));
             }
-            ast::ExprInner::BinOp(op, a, b) => {
-                let func_span = a.span;
-                let (func, func_meta) = self.lower_expr(bindings, *a, level)?;
-                let arg = self.lower_expr(bindings, *b, level)?.0;
-                match op {
-                    ast::BinOp::Call => {
-                        match func_meta {
-                            TermMeta::None => {
-                                // the var where we will store the result
-                                let ret = self.ck.add_var(None, level);
-                                // ret's span is just the entire expr
-                                let (ret_out, ret_inp) = ret.polarize(&mut self.ck, expr.span);
-                                let func_inp = Neg::Func(arg.ty, ret_inp);
-                                // the func's span is, well, the func's span
-                                let func_inp = self.ck.add_ty(func_inp, func_span);
-                                self.ck.flow(func.ty, func_inp)?;
-                                Ok(Term {
-                                    inner: TermInner::Application(Box::new(func), Box::new(arg)),
-                                    ty: ret_out,
-                                })
-                            }
-                            TermMeta::Type(id) => {
-                                let ty = self
-                                    .ck
-                                    .add_ty(Pos::Prim(PosPrim::Label(id, arg.ty)), expr.span);
-                                Ok(Term {
-                                    inner: TermInner::AttachTag(id, Box::new(arg)),
-                                    ty,
-                                })
-                            }
-                        }
+            ast::ExprInner::Call(func, args) => {
+                let func_span = func.span;
+                let (func, func_meta) = self.lower_expr(bindings, *func, level)?;
+                let args = args
+                    .into_iter()
+                    .map(|arg| Ok(self.lower_expr(bindings, arg, level)?.0))
+                    .collect::<Result<Vec<_>, diag::Error>>()?;
+                match func_meta {
+                    TermMeta::Type(id) if args.len() == 1 => {
+                        let arg = args.into_iter().next().unwrap();
+                        let ty = self
+                            .ck
+                            .add_ty(Pos::Prim(PosPrim::Label(id, arg.ty)), expr.span);
+                        Ok(Term {
+                            inner: TermInner::AttachTag(id, Box::new(arg)),
+                            ty,
+                        })
                     }
+                    TermMeta::None | TermMeta::Type(_) => {
+                        // the var where we will store the result
+                        let ret = self.ck.add_var(None, level);
+                        // ret's span is just the entire expr
+                        let (ret_out, ret_inp) = ret.polarize(&mut self.ck, expr.span);
+                        let func_inp =
+                            Neg::Prim(NegPrim::Func(args.iter().map(|x| x.ty).collect(), ret_inp));
+                        // the func's span is, well, the func's span
+                        let func_inp = self.ck.add_ty(func_inp, func_span);
+                        self.ck.flow(func.ty, func_inp)?;
+                        Ok(Term {
+                            inner: TermInner::Application(Box::new(func), args),
+                            ty: ret_out,
+                        })
+                    }
+                }
+            }
+            ast::ExprInner::BinOp(op, _a, _b) => {
+                match op {
                     // no adhoc polymorphism means no math, frick you
                     _ => panic!(),
                 }

@@ -3,9 +3,10 @@
 #![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ast::{Expr, ExprInner, Ident, LetArm, LiteralKind, QualifiedIdent};
+use typeck::Pos;
 
 mod ast;
 mod diag;
@@ -130,6 +131,17 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn call(
+        &mut self,
+        expr1: impl Construct<Box<ast::Expr>>,
+        expr2: impl Construct<Vec<ast::Expr>>,
+        span: impl Construct<Span>,
+    ) -> Expr {
+        Expr::new(
+            ExprInner::Call(expr1.construct(self), expr2.construct(self)),
+            span.construct(self),
+        )
+    }
     pub fn binary(
         &mut self,
         op: ast::BinOp,
@@ -144,7 +156,7 @@ impl ParseCtx {
     }
     pub fn lambda(
         &mut self,
-        pattern: impl Construct<ast::Pattern>,
+        pattern: impl Construct<Vec<ast::Pattern>>,
         expr: impl Construct<Box<ast::Expr>>,
         span: impl Construct<Span>,
     ) -> Expr {
@@ -287,8 +299,37 @@ fn main() {
         hir_eval::eval_term(
             &mut scope.try_into().unwrap(),
             hir::Term {
-                inner: hir::TermInner::VarAccess(main_var),
-                ty,
+                inner: hir::TermInner::Application(
+                    Box::new(hir::Term {
+                        inner: hir::TermInner::VarAccess(main_var),
+                        ty,
+                    }),
+                    vec![]
+                ),
+                ty: {
+                    let mut vis = BTreeSet::new();
+                    vis.insert(ty.id());
+                    let mut tys = vec![ty.id()];
+                    'a: loop {
+                        let mut tys1 = vec![];
+                        std::mem::swap(&mut tys, &mut tys1);
+                        for ty in tys1 {
+                            match ctx.ck.ty(ty) {
+                                Pos::Prim(typeck::PosPrim::Func(x)) => {
+                                    break 'a x.get(&0).unwrap().1
+                                }
+                                Pos::Var(v) => {
+                                    for x in ctx.ck.var::<typeck::PosPrim>(*v) {
+                                        if vis.insert(x) {
+                                            tys.push(x);
+                                        }
+                                    }
+                                }
+                                x => panic!("{x:?}"),
+                            }
+                        }
+                    }
+                }
             }
         )
         .unwrap()

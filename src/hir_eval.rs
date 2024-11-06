@@ -8,7 +8,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Lambda(Scope, VarId, Box<Term>),
+    Lambda(Scope, Vec<VarId>, Box<Term>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -89,20 +89,22 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             hir::Value::Intrinsic(x) => Value::Intrinsic(x),
         }),
         hir::TermInner::VarAccess(var) => Ok(scope.get(var).unwrap().clone()),
-        hir::TermInner::Application(func, expr) => {
+        hir::TermInner::Application(func, exprs) => {
             let mut func = eval_term(scope, *func)?;
-            let (mut func_scope, arg, body) = loop {
+            let (mut func_scope, args, body) = loop {
                 match func {
                     Value::Tagged(_, x) => func = *x,
-                    Value::Lambda(func_scope, arg, body) => break (func_scope, arg, body),
+                    Value::Lambda(func_scope, args, body) => break (func_scope, args, body),
                     _ => {
                         unreachable!("unexpected application to {func:?}, why did this typecheck?");
                     }
                 }
             };
-            let expr = eval_term(scope, *expr)?;
+            let exprs = exprs.into_iter().map(|expr| eval_term(scope, expr));
             func_scope.scope(|scope, handle| {
-                scope.insert(handle, arg, expr);
+                for (arg, expr) in args.into_iter().zip(exprs) {
+                    scope.insert(handle, arg, expr?);
+                }
                 eval_term(scope, *body)
             })
         }
