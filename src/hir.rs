@@ -455,7 +455,6 @@ impl Ctx {
                             vars: &mut LinkedList<(VarId, PosIdS)>,
                             cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
                         ) -> Result<(Term, bool), diag::Error> {
-                            println!("3 {cases:?}");
                             let mut map = cases
                                 .into_iter()
                                 .map(|(mut x, y)| (x.pop_front(), x, y))
@@ -540,7 +539,6 @@ impl Ctx {
                             vars: &mut LinkedList<(VarId, PosIdS)>,
                             cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
                         ) -> Result<(Term, bool), diag::Error> {
-                            println!("2 {cases:?}");
                             let mut map = cases
                                 .into_iter()
                                 .map(|(mut x, y)| (x.pop_front(), x, y))
@@ -634,7 +632,6 @@ impl Ctx {
                             vars: &mut LinkedList<(VarId, PosIdS)>,
                             cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
                         ) -> Result<(Term, bool), diag::Error> {
-                            println!("1 {cases:?}");
                             // sort by resolved tag
                             let cases = cases
                                 .into_iter()

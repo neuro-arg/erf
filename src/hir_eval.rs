@@ -61,7 +61,7 @@ impl TryFrom<hir::Scope> for Scope {
 }
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
-    println!("{:#?}", term.inner);
+    // println!("{:#?}", term.inner);
     match term.inner {
         hir::TermInner::CheckTag {
             var,
@@ -94,7 +94,14 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             Err(Error::NoValue)
         }
         hir::TermInner::AttachTag(tag, val) => {
-            Ok(Value::Tagged(tag, Box::new(eval_term(scope, *val)?)))
+            let mut ret = eval_term(scope, *val)?;
+            Ok(match &mut ret {
+                Value::Tagged(tag1, _) => {
+                    *tag1 = tag;
+                    ret
+                }
+                _ => Value::Tagged(tag, Box::new(ret)),
+            })
         }
         hir::TermInner::Bind { bindings, expr } => scope.scope(|scope, handle| {
             for (var, term) in Vec::from(bindings) {

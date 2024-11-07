@@ -366,8 +366,8 @@ impl TypeCk {
                     self.q.enqueue(pos, *fallthrough);
                     self.q.enqueue(*flow_pos, *flow_neg);
                 }
-                (pos1, neg1) => {
-                    println!("{pos1:?} {neg1:?}");
+                (_pos1, _neg1) => {
+                    // println!("{pos1:?} {neg1:?}");
                     return Err(diag::TypeError::new(
                         HumanType::from_pos(self, pos.id()),
                         HumanType::from_neg(self, neg.id()),
