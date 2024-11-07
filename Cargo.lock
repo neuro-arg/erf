@@ -130,6 +130,7 @@ dependencies = [
  "ariadne",
  "immutable-chunkmap",
  "indexmap",
+ "itertools 0.13.0",
  "lalrpop-util",
  "logos",
  "malachite",
@@ -138,6 +139,7 @@ dependencies = [
  "malachite-q",
  "rowan",
  "rustyline",
+ "smallvec",
  "thiserror",
 ]
 
@@ -244,6 +246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "lalrpop-util"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -334,7 +345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46059721011b0458b7bd6d9179be5d0b60294281c23320c207adceaecc54d13b"
 dependencies = [
  "hashbrown 0.14.5",
- "itertools",
+ "itertools 0.11.0",
  "libm",
  "ryu",
 ]
@@ -345,7 +356,7 @@ version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9bfda4e3628f09bf7c42242d590b5d0cc04ff0a29c820d81e9afa25db7b089e"
 dependencies = [
- "itertools",
+ "itertools 0.11.0",
  "malachite-base",
  "malachite-nz",
  "malachite-q",
@@ -357,7 +368,7 @@ version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1503b27e825cabd1c3d0ff1e95a39fb2ec9eab6fd3da6cfa41aec7091d273e78"
 dependencies = [
- "itertools",
+ "itertools 0.11.0",
  "libm",
  "malachite-base",
 ]
@@ -368,7 +379,7 @@ version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a475503a70a3679dbe3b9b230a23622516742528ba614a7b2490f180ea9cb514"
 dependencies = [
- "itertools",
+ "itertools 0.11.0",
  "malachite-base",
  "malachite-nz",
 ]

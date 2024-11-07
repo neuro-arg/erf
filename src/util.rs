@@ -101,3 +101,24 @@ impl<T> Debug for IdSpan<T> {
             .finish()
     }
 }
+
+pub enum IterEither<A, B> {
+    A(A),
+    B(B),
+}
+
+impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for IterEither<A, B> {
+    type Item = A::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::A(x) => x.next(),
+            Self::B(x) => x.next(),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::A(x) => x.size_hint(),
+            Self::B(x) => x.size_hint(),
+        }
+    }
+}

@@ -3,7 +3,10 @@ use std::hash::Hash;
 
 use indexmap::IndexSet;
 
-use crate::{util::IdSpan, Span};
+use crate::{
+    util::{IdSpan, IterEither},
+    Span,
+};
 
 use super::{NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
 
@@ -19,27 +22,6 @@ pub enum AnyIdMut<'a, T: PolarPrimitive> {
     Same(&'a mut IdSpan<T>),
     Inverse(&'a mut IdSpan<T::Inverse>),
     Var(&'a mut VarId),
-}
-
-enum IterEither<A, B> {
-    A(A),
-    B(B),
-}
-
-impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for IterEither<A, B> {
-    type Item = A::Item;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::A(x) => x.next(),
-            Self::B(x) => x.next(),
-        }
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            Self::A(x) => x.size_hint(),
-            Self::B(x) => x.size_hint(),
-        }
-    }
 }
 
 pub trait PolarPrimitive: Clone + Eq + Hash {
@@ -133,7 +115,7 @@ impl PolarPrimitive for NegPrim {
                     .map(AnyIdRef::Same),
             )),
             Self::Func(a, b) => IterEither::A(IterEither::B(
-                a.iter().map(AnyIdRef::Inverse).chain([AnyIdRef::Same(&b)]),
+                a.iter().map(AnyIdRef::Inverse).chain([AnyIdRef::Same(b)]),
             )),
             Self::Record(_, x) => IterEither::B(IterEither::A(Some(AnyIdRef::Same(x)).into_iter())),
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => {

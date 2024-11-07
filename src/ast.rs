@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Display};
 
 use crate::Span;
 
@@ -42,6 +42,33 @@ pub enum BinOp {
     Or,
 }
 
+impl Display for BinOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pow => "**",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::FloorDiv => "//",
+            Self::Rem => "%",
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
+            Self::BitAnd => "&",
+            Self::BitXor => "^",
+            Self::BitOr => "|",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Gt => ">",
+            Self::Le => "<=",
+            Self::Ge => ">=",
+            Self::And => "&&",
+            Self::Or => "||",
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprInner {
     Literal(LiteralKind, String),
@@ -52,6 +79,21 @@ pub enum ExprInner {
     Lambda(Vec<Pattern>, Box<Expr>),
     LetRec(BTreeMap<Ident, Vec<LetArm>>, Box<Expr>),
     TypeConstructor(Ident),
+}
+
+impl Expr {
+    pub fn as_lambda(&self) -> Option<(&[Pattern], &Expr)> {
+        match &self.inner {
+            ExprInner::Lambda(a, b) => Some((a, b)),
+            _ => None,
+        }
+    }
+    pub fn into_lambda(self) -> Option<(Vec<Pattern>, Expr)> {
+        match self.inner {
+            ExprInner::Lambda(a, b) => Some((a, *b)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,10 +152,10 @@ impl Expr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PatternInner {
-    Variable(String),
     Tag(String, Span, Box<Pattern>),
+    Variable(String),
 }
 
 impl PatternInner {
@@ -125,7 +167,7 @@ impl PatternInner {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pattern {
     pub inner: PatternInner,
     pub span: Span,
@@ -150,15 +192,21 @@ impl Pattern {
     pub fn label(&self) -> Option<String> {
         self.inner.label()
     }
+    pub fn iter_var_names(&self) -> impl Iterator<Item = &str> {
+        match &self.inner {
+            PatternInner::Tag(_, _, x) => x.iter_var_names(),
+            PatternInner::Variable(x) => [x.as_str()].into_iter(),
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LetPatternInner {
     Val,
     Func(Vec<Pattern>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LetPattern {
     pub inner: LetPatternInner,
     pub ident: Ident,
@@ -178,6 +226,12 @@ impl LetPattern {
             inner: LetPatternInner::Func(args),
             ident,
             span,
+        }
+    }
+    pub fn as_func(&self) -> Option<&[Pattern]> {
+        match &self.inner {
+            LetPatternInner::Func(x) => Some(x),
+            _ => None,
         }
     }
 }

@@ -623,6 +623,8 @@ pub enum Error {
     ),
     #[error("error: {0}")]
     Other(String, Span),
+    #[error("(internal, this shouldn't be returned) no value")]
+    NoValue,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -649,6 +651,7 @@ impl Error {
         let resolve =
             |span: &crate::Span| ResolvedSpan(span_table[span.file as usize].as_ref(), *span);
         match self {
+            Self::NoValue => unreachable!("unexpected no value error"),
             Self::Type(TypeError {
                 expected,
                 found,

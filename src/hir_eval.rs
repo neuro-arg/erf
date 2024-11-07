@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::{
     diag::Error,
@@ -8,7 +8,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Lambda(Scope, Vec<VarId>, Box<Term>),
+    Lambda(Scope, BTreeMap<usize, (Vec<VarId>, Term)>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -62,15 +62,36 @@ impl TryFrom<hir::Scope> for Scope {
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
     match term.inner {
-        hir::TermInner::CheckTag { var, mut branches } => eval_term(
-            scope,
+        hir::TermInner::CheckTag {
+            var,
+            mut branches,
+            fallthrough,
+        } => {
             if let Value::Tagged(tag, _) = scope.get(var).unwrap() {
-                branches.remove(&Some(*tag))
-            } else {
-                None
+                if let Some(branch) = branches.remove(tag) {
+                    match eval_term(scope, branch) {
+                        Err(Error::NoValue) => {}
+                        x => return x,
+                    }
+                }
             }
-            .unwrap_or_else(|| branches.remove(&None).unwrap()),
-        ),
+            if let Some(fallthrough) = fallthrough {
+                eval_term(scope, *fallthrough)
+            } else {
+                Err(Error::NoValue)
+            }
+        }
+        hir::TermInner::Fallthrough => Err(Error::NoValue),
+        hir::TermInner::If(..) => todo!(),
+        hir::TermInner::Sequence(x) => {
+            for x in x {
+                match eval_term(scope, x) {
+                    Err(Error::NoValue) => {}
+                    x => return x,
+                }
+            }
+            Err(Error::NoValue)
+        }
         hir::TermInner::AttachTag(tag, val) => {
             Ok(Value::Tagged(tag, Box::new(eval_term(scope, *val)?)))
         }
@@ -82,7 +103,7 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             eval_term(scope, *expr)
         }),
         hir::TermInner::Value(val) => Ok(match val {
-            hir::Value::Lambda(a, b) => Value::Lambda(scope.clone(), a, b),
+            hir::Value::Lambda(x) => Value::Lambda(scope.clone(), x),
             hir::Value::Int(x) => Value::Int(x),
             hir::Value::Bool(x) => Value::Bool(x),
             hir::Value::Float(x) => Value::Float(x),
@@ -91,21 +112,24 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
         hir::TermInner::VarAccess(var) => Ok(scope.get(var).unwrap().clone()),
         hir::TermInner::Application(func, exprs) => {
             let mut func = eval_term(scope, *func)?;
-            let (mut func_scope, args, body) = loop {
+            let (mut func_scope, mut func) = loop {
                 match func {
                     Value::Tagged(_, x) => func = *x,
-                    Value::Lambda(func_scope, args, body) => break (func_scope, args, body),
+                    Value::Lambda(func_scope, func) => break (func_scope, func),
                     _ => {
                         unreachable!("unexpected application to {func:?}, why did this typecheck?");
                     }
                 }
             };
             let exprs = exprs.into_iter().map(|expr| eval_term(scope, expr));
+            let (args, body) = func
+                .remove(&exprs.len())
+                .expect("invalid argc????? why did this typecheck?");
             func_scope.scope(|scope, handle| {
                 for (arg, expr) in args.into_iter().zip(exprs) {
                     scope.insert(handle, arg, expr?);
                 }
-                eval_term(scope, *body)
+                eval_term(scope, body)
             })
         }
     }

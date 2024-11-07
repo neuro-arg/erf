@@ -284,7 +284,7 @@ impl TypeCk {
                     }
                 }
                 (
-                    Pos::Prim(PosPrim::Label(label1, ty1)),
+                    Pos::Prim(PosPrim::Label(label1, _)),
                     Neg::Prim(NegPrim::Label { cases, fallthrough }),
                 ) => {
                     let cases = if let Some((ty2, refutable)) = cases.get(label1) {
@@ -296,7 +296,7 @@ impl TypeCk {
                     };
                     let mut handled = false;
                     for case in cases {
-                        self.q.enqueue(*ty1, case);
+                        self.q.enqueue(pos, case);
                         handled = true;
                     }
                     if !handled {
@@ -350,7 +350,11 @@ impl TypeCk {
                         }
                     }
                 }
-                (_, _) => {
+                (Pos::Prim(PosPrim::Label(_, ty)), _) => {
+                    self.q.enqueue(*ty, neg);
+                }
+                (pos1, neg1) => {
+                    println!("{pos1:?} {neg1:?}");
                     return Err(diag::TypeError::new(
                         HumanType::from_pos(self, pos.id()),
                         HumanType::from_neg(self, neg.id()),

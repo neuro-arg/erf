@@ -2,12 +2,14 @@
 // it's the best choice for stuff like constant folding
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, LinkedList},
     str::FromStr,
 };
 
 use indexmap::{IndexMap, IndexSet};
+use itertools::Itertools;
 use malachite::num::logic::traits::SignificantBits;
+use smallvec::SmallVec;
 
 use crate::{
     ast::{self, Expr, Ident, LetArm, LetPatternInner},
@@ -23,7 +25,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Lambda(Vec<VarId>, Box<Term>),
+    Lambda(BTreeMap<usize, (Vec<VarId>, Term)>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -49,8 +51,18 @@ pub enum TermInner {
     AttachTag(LabelId, Box<Term>),
     CheckTag {
         var: VarId,
-        branches: BTreeMap<Option<LabelId>, Term>,
+        branches: BTreeMap<LabelId, Term>,
+        /// Note that this is very literal fallthrough, go here if none of the branches matched,
+        /// and if this is None, then fallthrough further
+        fallthrough: Option<Box<Term>>,
     },
+    /// Run terms in a row, with fallthrough support
+    Sequence(Vec<Term>),
+    /// Exit this branch and go to If's else or CheckTag's fallthrough or next item in a Sequence.
+    /// If there's no other branches, this is undefined behavior.
+    /// TODO: disallow Fallthrough from exiting an If and make it only work on Sequence
+    Fallthrough,
+    If(Box<Term>, Box<Term>, Box<Term>),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -108,6 +120,9 @@ impl Bindings {
     fn remove_ck(&mut self, s: &str) {
         self.ck_map.get_mut(s).unwrap().pop();
     }
+    pub fn contains(&self, s: &str) -> bool {
+        self.ck_map.get(s).is_some_and(|x| !x.is_empty())
+    }
     pub fn get(
         &mut self,
         s: &str,
@@ -158,51 +173,6 @@ impl Bindings {
                 tag, span, true,
             ))),
         }
-    }
-    fn insert_pattern(
-        &mut self,
-        pat: ast::Pattern,
-        var: VarId,
-        var_out: PosIdS,
-        ck: &mut TypeCk,
-        level: u16,
-    ) -> Result<(Vec<(VarId, Term)>, Vec<String>), diag::Error> {
-        let mut vars = Vec::new();
-        let mut to_pop = Vec::new();
-        match pat.inner {
-            ast::PatternInner::Variable(name) => {
-                to_pop.push(name.clone());
-                self.insert_ck(name, VarType::Mono(var), false);
-            }
-            ast::PatternInner::Tag(tag, span, pat) => {
-                let tag = self.get_type(&tag, span, ck, level)?;
-                let var1 = ck.add_var(pat.label(), level);
-                let (var1_out, var1_inp) = var1.polarize(ck, pat.span);
-                let neg = ck.add_ty(
-                    Neg::Prim(NegPrim::Label {
-                        cases: {
-                            let mut cases = BTreeMap::new();
-                            cases.insert(tag, (var1_inp, false));
-                            cases
-                        },
-                        fallthrough: None,
-                    }),
-                    pat.span,
-                );
-                ck.flow(var_out, neg)?;
-                vars.push((
-                    var1,
-                    Term {
-                        inner: TermInner::VarAccess(var),
-                        ty: var1_out,
-                    },
-                ));
-                let (ret2, to_pop2) = self.insert_pattern(*pat, var1, var1_out, ck, level)?;
-                vars.extend(ret2);
-                to_pop.extend(to_pop2);
-            }
-        }
-        Ok((vars, to_pop))
     }
     fn insert_pattern_let(&mut self, arms: Vec<(Ident, VarType)>) -> Vec<String> {
         let mut to_pop = Vec::new();
@@ -289,14 +259,17 @@ impl Ctx {
         defs: Vec<LetArm>,
         level: u16,
     ) -> Result<
-        ((bool, Ident, VarId, PosIdS), (Ident, VarId, NegIdS, Expr)),
+        (
+            (bool, Ident, VarId, PosIdS),
+            (VarId, NegIdS, SmallVec<[Expr; 1]>),
+        ),
         diag::VarRedefinitionError,
     > {
         assert!(!defs.is_empty());
-        let mut defs = defs.into_iter();
-        let def = defs.next().unwrap();
-        match def.pattern.inner {
+        match defs[0].pattern.inner {
             LetPatternInner::Val => {
+                let mut defs = defs.into_iter();
+                let def = defs.next().unwrap();
                 if let Some(def1) = defs.next() {
                     return Err(diag::VarRedefinitionError::new(
                         ident,
@@ -312,41 +285,73 @@ impl Ctx {
                 let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
                 Ok((
                     (is_type, ident.clone(), var, var_out),
-                    (ident, var, var_inp, def.body),
+                    (var, var_inp, [def.body].into()),
                 ))
             }
-            LetPatternInner::Func(args) => {
-                if let Some(def1) = defs.next() {
-                    return Err(diag::VarRedefinitionError::new(
-                        ident,
-                        [def.pattern.span, def1.pattern.span]
-                            .into_iter()
-                            .chain(defs.map(|x| x.pattern.span))
-                            .collect(),
-                    ));
+            LetPatternInner::Func(_) => {
+                for def1 in &defs {
+                    if let LetPatternInner::Val = def1.pattern.inner {
+                        return Err(diag::VarRedefinitionError::new(
+                            ident,
+                            [defs[0].pattern.span, def1.pattern.span]
+                                .into_iter()
+                                .collect(),
+                        ));
+                    }
                 }
-                let mut lambda = def.body;
-                lambda = Expr {
-                    span: def.span,
-                    inner: ast::ExprInner::Lambda(args, Box::new(lambda)),
-                };
                 let var = self.ck.add_var(Some(ident.clone()), level + 1);
-                let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
+                let (var_out, var_inp) = var.polarize(&mut self.ck, defs[0].pattern.span);
+                let mut defs = defs;
+                defs.sort_by(|x, y| {
+                    match x
+                        .pattern
+                        .as_func()
+                        .unwrap()
+                        .len()
+                        .cmp(&y.pattern.as_func().unwrap().len())
+                    {
+                        std::cmp::Ordering::Equal => x.pattern.cmp(&y.pattern),
+                        x => x,
+                    }
+                });
+                defs.sort_by_key(|x| x.pattern.as_func().unwrap().len());
                 Ok((
                     (false, ident.clone(), var, var_out),
-                    (ident, var, var_inp, lambda),
+                    (
+                        var,
+                        var_inp,
+                        defs.into_iter()
+                            .map(|x| {
+                                let LetArm {
+                                    pattern,
+                                    body,
+                                    span,
+                                } = x;
+                                let pattern = match pattern.inner {
+                                    LetPatternInner::Func(x) => x,
+                                    _ => unreachable!(),
+                                };
+                                Expr::new(ast::ExprInner::Lambda(pattern, Box::new(body)), span)
+                            })
+                            .collect(),
+                    ),
                 ))
             }
         }
     }
+    // There may be multiple exprs if this expr is defined in multiple places
+    // This is currently only a thing for functions
     fn lower_expr(
         &mut self,
         bindings: &mut Bindings,
-        expr: ast::Expr,
+        exprs: SmallVec<[ast::Expr; 1]>,
         level: u16,
     ) -> Result<(Term, TermMeta), diag::Error> {
+        let mut exprs = exprs.into_iter();
+        let expr = exprs.next().unwrap();
         (match expr.inner {
             ast::ExprInner::LetRec(arms, body) => {
+                assert!(exprs.next().is_none());
                 // first, allocate the variable that is to be assigned <expr1>
                 let (mut pats, exprs) = arms
                     .into_iter()
@@ -367,7 +372,7 @@ impl Ctx {
                         .collect(),
                     |bindings| {
                         let mut vars = Vec::new();
-                        for (_ident, var, var_inp, expr1) in exprs {
+                        for (var, var_inp, expr1) in exprs {
                             let expr1 = self.lower_expr(bindings, expr1, level + 1)?.0;
                             // now direct expr1 to var_inp (assignment)
                             self.ck.flow(expr1.ty, var_inp)?;
@@ -375,7 +380,7 @@ impl Ctx {
                             vars.push((var, expr1));
                         }
                         // finally, lower expr2 in the new scope
-                        let expr = self.lower_expr(bindings, *body, level)?.0;
+                        let expr = self.lower_expr(bindings, [*body].into(), level)?.0;
                         Ok::<_, diag::Error>((expr, vars))
                     },
                 );
@@ -389,51 +394,408 @@ impl Ctx {
                     },
                 })
             }
-            ast::ExprInner::Lambda(pats, body) => {
-                let mut arg_inps = Vec::new();
-                let mut args = Vec::new();
-                let mut tmp0 = Vec::new();
-                let mut tmp1 = Vec::new();
-                for pat in pats {
-                    // first, allocate a new variable to be used for the arg
-                    let arg = self.ck.add_var(pat.label(), level);
-                    // its span is to be the pattern's span
-                    let (arg_out, arg_inp) = arg.polarize(&mut self.ck, pat.span);
-                    let tmp = bindings.insert_pattern(pat, arg, arg_out, &mut self.ck, level)?;
-                    arg_inps.push(arg_inp);
-                    args.push(arg);
-                    tmp0.extend(tmp.0);
-                    tmp1.extend(tmp.1);
-                }
-                bindings.new_scope((tmp0, tmp1), |bindings, vars| {
-                    let func_span = expr.span;
-                    // now, lower the body with that var assigned
-                    let body1 = self.lower_expr(bindings, *body, level)?.0;
-                    // the type will be a function that takes arg's type and returns body's type
-                    let mut ty = BTreeMap::new();
-                    ty.insert(arg_inps.len(), (arg_inps, body1.ty));
-                    let ty = Pos::Prim(PosPrim::Func(ty));
-                    // its span will be the function's span
-                    let ty = self.ck.add_ty(ty, func_span);
-                    // if new vars were created during pattern destructuring, bind them
-                    let expr1 = if vars.is_empty() {
-                        body1
-                    } else {
-                        Term {
-                            ty: body1.ty,
-                            inner: TermInner::Bind {
-                                bindings: vars.into(),
-                                expr: Box::new(body1),
-                            },
+            ast::ExprInner::Lambda(..) => {
+                let span = expr.span;
+                let exprs = [expr].into_iter().chain(exprs);
+                let (tys, exprs) = exprs
+                    .chunk_by(|x| x.as_lambda().unwrap().0.len())
+                    .into_iter()
+                    .map(|(len, exprs)| {
+                        let exprs: Vec<_> = exprs
+                            .map(|expr| {
+                                let (pat, expr) = expr.into_lambda().unwrap();
+                                // this is too depressing to work with without linked lists
+                                // sure, i can pass vectors and numbers around, but thats super annoying
+                                (LinkedList::from_iter(pat), expr)
+                            })
+                            .collect();
+                        // each subpattern's lowered version consists of 3 parts:
+                        // 1. bind the subpattern variable if not already bound
+                        // 2. check the variable tag if necessary
+                        // 3. check the refutable conditions associated with that variable or prior
+                        //    variables
+                        // for example:
+                        // f (A { x; y = 0; }) => 5;
+                        // f (A { x = 0; y = B w; }) => 6;
+                        // f (B { }) => 7;
+                        // should compile to
+                        // f =
+                        //  arg: A { x : int; y : int | B _; } = arg0
+                        //  match (tag arg)
+                        //   A =>
+                        //    x: int = arg.x;
+                        //    if x == 0
+                        //      y: B _ = arg.y;
+                        //      match (tag y)
+                        //       B =>
+                        //        return 6;
+                        //    y: int = arg.y;
+                        //    if y == 0
+                        //      return 5;
+                        //   B =>
+                        //    return y;
+                        //
+                        // when it comes to sorting checks, it's best to start with common
+                        // subpatterns
+                        // for example, if there's `A { x, y }` and `A { y, z }`, then the order
+                        // y, x, z makes sense
+                        // but also in case of (A, B, C) and (A, A, C) it's too annoying to check 1
+                        // and 3 before 2, so who cares
+
+                        // suboptimal implementation because i'm tired
+                        // compile using classic recursive descent
+
+                        // TODO: represent refutability as an error plus a term to recover the term
+                        // this allows better error messages
+                        /// Func 3: base case (tags and conditions must match)
+                        fn compile_patterns_3(
+                            ctx: &mut Ctx,
+                            bindings: &mut Bindings,
+                            level: u16,
+                            vars: &mut LinkedList<(VarId, PosIdS)>,
+                            cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
+                        ) -> Result<(Term, bool), diag::Error> {
+                            println!("3 {cases:?}");
+                            let mut map = cases
+                                .into_iter()
+                                .map(|(mut x, y)| (x.pop_front(), x, y))
+                                .into_group_map_by(|(x, ..)| x.clone())
+                                .into_iter()
+                                .map(|x| {
+                                    (
+                                        x.0,
+                                        x.1.into_iter().map(|(_, x, y)| (x, y)).collect::<Vec<_>>(),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            map.sort_by(|x, y| match (&x.0, &y.0) {
+                                // sort None after Some
+                                // (i.e. no-label cases are to be processed last)
+                                (None, Some(_)) => std::cmp::Ordering::Greater,
+                                (Some(_), None) => std::cmp::Ordering::Less,
+                                (None, None) => std::cmp::Ordering::Equal,
+                                (Some(a), Some(b)) => a.cmp(b),
+                            });
+                            let out = ctx.ck.add_var(None, level);
+                            let arbitrary_bad_span = map[0].1[0].1.span;
+                            let mut out_pos = None;
+                            let mut ret = vec![];
+                            let mut refutable = true;
+                            for (pat, cases) in map {
+                                let (out_pos1, out_neg) =
+                                    out.polarize(&mut ctx.ck, arbitrary_bad_span);
+                                if out_pos.is_none() {
+                                    out_pos = Some(out_pos1);
+                                }
+                                match pat.as_ref().map(|x| &x.inner) {
+                                    Some(ast::PatternInner::Tag(..)) => unreachable!(),
+                                    // TODO: check that there's no patterns after irrefutable
+                                    // patterns?
+                                    Some(ast::PatternInner::Variable(x)) => {
+                                        let span = pat.as_ref().unwrap().span;
+                                        let (var, var_pos) = vars.pop_front().unwrap();
+                                        let arg = ctx.ck.add_var(Some(x.clone()), level);
+                                        bindings.insert_ck(x.clone(), VarType::Mono(arg), false);
+                                        let (rest, refutable1) = compile_patterns_1(ctx, bindings, level, vars, cases)?;
+                                        bindings.remove_ck(x);
+                                        let arg_inp = ctx.ck.add_ty(Neg::Var(arg), span);
+                                        ctx.ck.flow(var_pos, arg_inp)?;
+                                        let rest = Term {
+                                            ty: rest.ty,
+                                            inner: TermInner::Bind {
+                                                bindings: Box::new([(arg, Term {
+                                                    inner: TermInner::VarAccess(var),
+                                                    ty: var_pos,
+                                                })]),
+                                                expr: Box::new(rest),
+                                            },
+                                        };
+                                        if !refutable1 {
+                                            refutable = false;
+                                        }
+                                        ctx.ck.flow(rest.ty, out_neg)?;
+                                        ret.push(rest);
+                                    }
+                                    None => {
+                                        refutable = false;
+                                        let rest = ctx.lower_expr(bindings, [cases.into_iter().next().unwrap().1].into(), level)?.0;
+                                        ctx.ck.flow(rest.ty, out_neg)?;
+                                        ret.push(rest);
+                                    }
+                                }
+                            }
+                            if ret.len() == 1 {
+                                return Ok((ret.into_iter().next().unwrap(), refutable));
+                            }
+                            Ok((Term {
+                                inner: TermInner::Sequence(ret),
+                                ty: out_pos.unwrap(),
+                            }, refutable))
                         }
-                    };
-                    Ok(Term {
-                        ty,
-                        inner: TermInner::Value(Value::Lambda(args, Box::new(expr1))),
+                        /// Func 2: separate by conditions (tags must match)
+                        fn compile_patterns_2(
+                            ctx: &mut Ctx,
+                            bindings: &mut Bindings,
+                            level: u16,
+                            vars: &mut LinkedList<(VarId, PosIdS)>,
+                            cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
+                        ) -> Result<(Term, bool), diag::Error> {
+                            println!("2 {cases:?}");
+                            let mut map = cases
+                                .into_iter()
+                                .map(|(mut x, y)| (x.pop_front(), x, y))
+                                .into_group_map_by(|(x, ..)| x.clone())
+                                .into_iter()
+                                .map(|x| {
+                                    (
+                                        x.0,
+                                        x.1.into_iter().map(|(_, x, y)| (x, y)).collect::<Vec<_>>(),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            map.sort_by(|x, y| match (&x.0, &y.0) {
+                                // sort None after Some
+                                // (i.e. no-label cases are to be processed last)
+                                (None, Some(_)) => std::cmp::Ordering::Greater,
+                                (Some(_), None) => std::cmp::Ordering::Less,
+                                (None, None) => std::cmp::Ordering::Equal,
+                                (Some(a), Some(b)) => a.cmp(b),
+                            });
+                            // we don't have to check the tag here
+                            let branches = vec![];
+                            let mut unconditional = None;
+                            let out = ctx.ck.add_var(None, level);
+                            let arbitrary_bad_span = map[0].1[0].1.span;
+                            let mut out_pos = None;
+                            let mut refutable = true;
+                            for (pat, mut cases) in map {
+                                let (out_pos1, out_neg) =
+                                    out.polarize(&mut ctx.ck, arbitrary_bad_span);
+                                if out_pos.is_none() {
+                                    out_pos = Some(out_pos1);
+                                }
+                                match pat.as_ref().map(|x| &x.inner) {
+                                    Some(ast::PatternInner::Tag(..)) => unreachable!(),
+                                    Some(ast::PatternInner::Variable(x))
+                                        if bindings.contains(x) =>
+                                    {
+                                        let span = pat.as_ref().unwrap().span;
+                                        let (_var, _var_pos, meta) = bindings
+                                            .get(x, span, &mut ctx.ck, level)?
+                                            .unwrap();
+                                        match meta {
+                                            TermMeta::Type(_) => todo!("TODO proper error, do Type _ instead of just Type, or maybe I should handle this in the previous case that deals with tags"),
+                                            TermMeta::None => {}
+                                        }
+                                        todo!("compile to == condition")
+                                    }
+                                    /*let (rest, _refutable) = compile_patterns_3(
+                                        ctx, bindings, level, var, var_out, cases,
+                                    );
+                                    refutable = true;
+                                    branches.push(rest);*/
+                                    None | Some(ast::PatternInner::Variable(_)) => {
+                                        if let Some(pat) = pat {
+                                            for case in &mut cases {
+                                                case.0.push_front(pat.clone());
+                                            }
+                                        }
+                                        let (rest, refutable1) = compile_patterns_3(
+                                            ctx, bindings, level, vars, cases,
+                                        )?;
+                                        refutable = refutable1;
+                                        ctx.ck.flow(rest.ty, out_neg)?;
+                                        // TODO: error if two unconditional patterns match
+                                        unconditional = Some(rest);
+                                    }
+                                }
+                            }
+                            let mut term = unconditional.unwrap_or_else(|| Term {
+                                inner: TermInner::Fallthrough,
+                                ty: out_pos.unwrap(),
+                            });
+                            for (cond, body) in branches {
+                                term = Term {
+                                    inner: TermInner::If(
+                                        Box::new(cond),
+                                        Box::new(body),
+                                        Box::new(term),
+                                    ),
+                                    ty: out_pos.unwrap(),
+                                }
+                            }
+                            Ok((term, refutable))
+                        }
+                        /// Func 1: separate by tag
+                        fn compile_patterns_1(
+                            ctx: &mut Ctx,
+                            bindings: &mut Bindings,
+                            level: u16,
+                            vars: &mut LinkedList<(VarId, PosIdS)>,
+                            cases: Vec<(LinkedList<ast::Pattern>, Expr)>,
+                        ) -> Result<(Term, bool), diag::Error> {
+                            println!("1 {cases:?}");
+                            // sort by resolved tag
+                            let cases = cases
+                                .into_iter()
+                                .map(|(mut x, y)| match x.pop_front() {
+                                    Some(x1) => match x1.inner {
+                                        ast::PatternInner::Tag(tag, span, x1) => Ok((
+                                            Some((
+                                                bindings.get_type(
+                                                    &tag,
+                                                    span,
+                                                    &mut ctx.ck,
+                                                    level,
+                                                )?,
+                                                span,
+                                            )),
+                                            {
+                                                x.push_front(*x1);
+                                                x
+                                            },
+                                            y,
+                                        )),
+                                        ast::PatternInner::Variable(_) => {
+                                            x.push_front(x1);
+                                            Ok((None, x, y))
+                                        }
+                                    },
+                                    None => Ok((None, x, y)),
+                                })
+                                .collect::<Result<Vec<_>, diag::Error>>()?;
+                            let mut map = cases
+                                .into_iter()
+                                .into_group_map_by(|(t, ..)| t.map(|x| x.0))
+                                .into_iter()
+                                .map(|x| {
+                                    (
+                                        x.1[0].0,
+                                        x.1.into_iter().map(|(_, x, y)| (x, y)).collect::<Vec<_>>(),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            map.sort_by(|x, y| match (&x.0.map(|x| x.0), &y.0.map(|y| y.0)) {
+                                // sort None after Some
+                                // (i.e. no-label cases are to be processed last)
+                                (None, Some(_)) => std::cmp::Ordering::Greater,
+                                (Some(_), None) => std::cmp::Ordering::Less,
+                                (None, None) => std::cmp::Ordering::Equal,
+                                (Some(a), Some(b)) => a.cmp(b),
+                            });
+                            let mut tag_map = BTreeMap::new();
+                            let mut fallthrough = None;
+                            let mut ty_tag_map = BTreeMap::new();
+                            let mut ty_fallthrough = None;
+                            let mut refutable = false;
+                            let out = ctx.ck.add_var(None, level);
+                            let mut out_pos = None;
+                            // TODO: multiple and better spans (these spans frankly speaking make no sense)
+                            let arbitrary_bad_span = map[0].1[0].1.span;
+                            let var = vars.pop_front();
+                            for (tag, cases) in map {
+                                let var1 = if var.is_some() {
+                                    let var1 = ctx.ck.add_var(None, level);
+                                    let (var1_out, var1_inp) =
+                                        var1.polarize(&mut ctx.ck, arbitrary_bad_span);
+                                    vars.push_front((var1, var1_out));
+                                    Some((var1, var1_inp))
+                                } else {
+                                    None
+                                };
+                                let (rest, refutable1) = compile_patterns_2(
+                                    ctx, bindings, level, vars, cases,
+                                )?;
+                                if var.is_some() {
+                                    vars.pop_front();
+                                }
+                                let (out_pos1, out_neg) =
+                                    out.polarize(&mut ctx.ck, arbitrary_bad_span);
+                                if out_pos.is_none() {
+                                    out_pos = Some(out_pos1);
+                                }
+                                ctx.ck.flow(rest.ty, out_neg)?;
+                                // we've grouped the cases by tag, now strip the tag
+                                if let Some((tag, _tag_span)) = tag {
+                                    if refutable1 {
+                                        refutable = true;
+                                    }
+                                    let (var, var_out) = var.unwrap();
+                                    let (var1, var1_inp) = var1.unwrap();
+                                    ty_tag_map.insert(tag, (var1_inp, refutable1));
+                                    tag_map.insert(
+                                        tag,
+                                        Term {
+                                            inner: TermInner::Bind {
+                                                bindings: Box::new([(
+                                                    var1,
+                                                    Term {
+                                                        inner: TermInner::VarAccess(var),
+                                                        ty: var_out,
+                                                    },
+                                                )]),
+                                                expr: Box::new(rest),
+                                            },
+                                            ty: out_pos1,
+                                        },
+                                    );
+                                } else {
+                                    refutable = refutable1;
+                                    if let Some((_var1, var1_inp)) = var1 {
+                                        ty_fallthrough = Some(var1_inp);
+                                        fallthrough = Some(Box::new(rest));
+                                    } else {
+                                        return Ok((rest, refutable1));
+                                    }
+                                }
+                            }
+                            let (var, var_out) = var.unwrap();
+                            let ty = ctx.ck.add_ty(
+                                Neg::Prim(NegPrim::Label {
+                                    cases: ty_tag_map,
+                                    fallthrough: ty_fallthrough,
+                                }),
+                                arbitrary_bad_span,
+                            );
+                            ctx.ck.flow(var_out, ty)?;
+                            Ok((
+                                Term {
+                                    inner: TermInner::CheckTag {
+                                        var,
+                                        branches: tag_map,
+                                        fallthrough,
+                                    },
+                                    ty: out_pos.unwrap(),
+                                },
+                                refutable,
+                            ))
+                        }
+                        let mut args = LinkedList::new();
+                        let mut args2 = Vec::new();
+                        let mut args3 = Vec::new();
+                        // TODO: multiple spans
+                        // TODO: this should also show a different diag span depending on the branch
+                        for pat in &exprs[0].0 {
+                            let arg = self.ck.add_var(pat.label(), level);
+                            let (pos, neg) = arg.polarize(&mut self.ck, pat.span);
+                            args.push_back((arg, pos));
+                            args2.push(neg);
+                            args3.push(arg);
+                        }
+                        let (term, refutable) = compile_patterns_1(self, bindings, level, &mut args, exprs)?;
+                        if refutable {
+                            todo!("refutability oh no ub something something TODO error")
+                        }
+                        Ok(((len, (args2, term.ty)), (len, (args3, term))))
                     })
-                })
+                    .collect::<Result<(BTreeMap<_, _>, BTreeMap<_, _>), diag::Error>>()?;
+                // TODO: type with multiple spans
+                let ty = Pos::Prim(PosPrim::Func(tys));
+                let ty = self.ck.add_ty(ty, span);
+                Ok(Term { ty, inner: TermInner::Value(Value::Lambda(exprs)) })
             }
             ast::ExprInner::TypeConstructor(ident) => {
+                assert!(exprs.next().is_none());
                 // spans are kinda wacky but whatever
                 let id = bindings.get_type(&ident, expr.span, &mut self.ck, level)?;
                 let arg = self.ck.add_var(None, level);
@@ -445,32 +807,28 @@ impl Ctx {
                 ty.insert(1, (vec![arg_inp], ret_out));
                 let ty = Pos::Prim(PosPrim::Func(ty));
                 let ty = self.ck.add_ty(ty, expr.span);
+                let term = Term {
+                    inner: TermInner::AttachTag(id, Box::new(Term {
+                        inner: TermInner::VarAccess(arg),
+                        ty: arg_out,
+                    })),
+                    ty: ret_out,
+                };
+                let lambda = [(1, (vec![arg], term))].into_iter().collect();
                 return Ok((
                     Term {
-                        inner: TermInner::Value(Value::Lambda(
-                            vec![arg],
-                            Box::new(Term {
-                                inner: TermInner::AttachTag(
-                                    id,
-                                    Box::new(Term {
-                                        inner: TermInner::VarAccess(arg),
-                                        ty: arg_out,
-                                    }),
-                                ),
-                                ty: ret_out,
-                            }),
-                        )),
-                        ty,
+                        inner: TermInner::Value(Value::Lambda(lambda)), ty,
                     },
                     TermMeta::Type(id),
                 ));
             }
             ast::ExprInner::Call(func, args) => {
+                assert!(exprs.next().is_none());
                 let func_span = func.span;
-                let (func, func_meta) = self.lower_expr(bindings, *func, level)?;
+                let (func, func_meta) = self.lower_expr(bindings, [*func].into(), level)?;
                 let args = args
                     .into_iter()
-                    .map(|arg| Ok(self.lower_expr(bindings, arg, level)?.0))
+                    .map(|arg| Ok(self.lower_expr(bindings, [arg].into(), level)?.0))
                     .collect::<Result<Vec<_>, diag::Error>>()?;
                 match func_meta {
                     TermMeta::Type(id) if args.len() == 1 => {
@@ -501,65 +859,74 @@ impl Ctx {
                 }
             }
             ast::ExprInner::BinOp(op, _a, _b) => {
+                assert!(exprs.next().is_none());
                 match op {
                     // no adhoc polymorphism means no math, frick you
                     _ => panic!(),
                 }
             }
-            ast::ExprInner::UnOp(..) => todo!(),
-            ast::ExprInner::Literal(kind, value) => (match kind {
-                ast::LiteralKind::Bool => match value.as_str() {
-                    "false" => Ok((Value::Bool(false), Pos::Prim(PosPrim::Bool))),
-                    "true" => Ok((Value::Bool(true), Pos::Prim(PosPrim::Bool))),
-                    x => Err(diag::Error::Other(
-                        format!("unexpected boolean literal: {x}"),
-                        expr.span,
-                    )),
-                },
-                ast::LiteralKind::Int => match malachite_nz::integer::Integer::from_str(&value) {
-                    Ok(val) => {
-                        let Ok(bits) = u8::try_from({
-                            let mut last_limb = None;
-                            let mut bits = 0u64;
-                            for limb in val.twos_complement_limbs() {
-                                bits += std::mem::size_of_val(&limb) as u64 * 8;
-                                last_limb = Some(limb);
-                            }
-                            if let Some(limb) = last_limb {
-                                bits -= std::mem::size_of_val(&limb) as u64 * 8;
-                                bits += limb.significant_bits();
-                            }
-                            bits
-                        }) else {
-                            return Err(diag::Error::Other(
-                                "invalid integer literal".to_owned(),
-                                expr.span,
-                            ));
-                        };
-                        let signed = val < 0;
-                        Ok((
-                            Value::Int(val),
-                            Pos::Prim(PosPrim::IntLiteral { signed, bits }),
-                        ))
-                    }
-                    Err(()) => Err(diag::Error::Other(
-                        "invalid integer literal".to_owned(),
-                        expr.span,
-                    )),
-                },
-                ast::LiteralKind::Float => match value.parse::<f64>() {
-                    Ok(val) => Ok((Value::Float(val), Pos::Prim(PosPrim::FloatLiteral))),
-                    Err(err) => Err(diag::Error::Other(
-                        format!("invalid float literal: {err}"),
-                        expr.span,
-                    )),
-                },
-            })
-            .map(|(val, ty)| Term {
-                ty: self.ck.add_ty(ty, expr.span),
-                inner: TermInner::Value(val),
-            }),
+            ast::ExprInner::UnOp(..) => {
+                assert!(exprs.next().is_none());
+                todo!()
+            }
+            ast::ExprInner::Literal(kind, value) => {
+                assert!(exprs.next().is_none());
+                (match kind {
+                    ast::LiteralKind::Bool => match value.as_str() {
+                        "false" => Ok((Value::Bool(false), Pos::Prim(PosPrim::Bool))),
+                        "true" => Ok((Value::Bool(true), Pos::Prim(PosPrim::Bool))),
+                        x => Err(diag::Error::Other(
+                            format!("unexpected boolean literal: {x}"),
+                            expr.span,
+                        )),
+                    },
+                    ast::LiteralKind::Int => match malachite_nz::integer::Integer::from_str(&value)
+                    {
+                        Ok(val) => {
+                            let Ok(bits) = u8::try_from({
+                                let mut last_limb = None;
+                                let mut bits = 0u64;
+                                for limb in val.twos_complement_limbs() {
+                                    bits += std::mem::size_of_val(&limb) as u64 * 8;
+                                    last_limb = Some(limb);
+                                }
+                                if let Some(limb) = last_limb {
+                                    bits -= std::mem::size_of_val(&limb) as u64 * 8;
+                                    bits += limb.significant_bits();
+                                }
+                                bits
+                            }) else {
+                                return Err(diag::Error::Other(
+                                    "invalid integer literal".to_owned(),
+                                    expr.span,
+                                ));
+                            };
+                            let signed = val < 0;
+                            Ok((
+                                Value::Int(val),
+                                Pos::Prim(PosPrim::IntLiteral { signed, bits }),
+                            ))
+                        }
+                        Err(()) => Err(diag::Error::Other(
+                            "invalid integer literal".to_owned(),
+                            expr.span,
+                        )),
+                    },
+                    ast::LiteralKind::Float => match value.parse::<f64>() {
+                        Ok(val) => Ok((Value::Float(val), Pos::Prim(PosPrim::FloatLiteral))),
+                        Err(err) => Err(diag::Error::Other(
+                            format!("invalid float literal: {err}"),
+                            expr.span,
+                        )),
+                    },
+                })
+                .map(|(val, ty)| Term {
+                    ty: self.ck.add_ty(ty, expr.span),
+                    inner: TermInner::Value(val),
+                })
+            }
             ast::ExprInner::Variable(var) => {
+                assert!(exprs.next().is_none());
                 let var = match *var.as_slice() {
                     [ref x] => x,
                     [ref x, ..] => {
@@ -614,7 +981,7 @@ impl Ctx {
                 .collect(),
         );
         let mut scope = Scope::default();
-        for (_ident, var, var_inp, expr1) in exprs {
+        for (var, var_inp, expr1) in exprs {
             let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?.0;
             // now direct expr1 to var_inp (assignment)
             self.ck.flow(expr1.ty, var_inp)?;
