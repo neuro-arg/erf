@@ -720,7 +720,6 @@ impl Ctx {
                                 if out_pos.is_none() {
                                     out_pos = Some(out_pos1);
                                 }
-                                ctx.ck.flow(rest.ty, out_neg)?;
                                 // we've grouped the cases by tag, now strip the tag
                                 if let Some((tag, _tag_span)) = tag {
                                     if refutable1 {
@@ -728,7 +727,7 @@ impl Ctx {
                                     }
                                     let (var, var_out) = var.unwrap();
                                     let (var1, var1_inp) = var1.unwrap();
-                                    ty_tag_map.insert(tag, (var1_inp, refutable1));
+                                    ty_tag_map.insert(tag, (var1_inp, refutable1, (rest.ty, out_neg)));
                                     tag_map.insert(
                                         tag,
                                         Term {
@@ -762,8 +761,8 @@ impl Ctx {
                                             },
                                             ty: out_pos1,
                                         };
+                                        ty_fallthrough = Some((var1_inp, (rest.ty, out_neg)));
                                         fallthrough = Some(Box::new(rest));
-                                        ty_fallthrough = Some(var1_inp);
                                     } else {
                                         return Ok((rest, refutable1));
                                     }

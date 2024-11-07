@@ -439,7 +439,7 @@ impl HumanType {
             ),
             Neg::Prim(NegPrim::Label { cases, fallthrough }) => {
                 let mut val = Self::Bot;
-                for (label, (ty, _refutable)) in cases {
+                for (label, (ty, _refutable, _flow)) in cases {
                     val = Self::union2(
                         val,
                         Self::Tagged(
@@ -448,7 +448,7 @@ impl HumanType {
                         ),
                     );
                 }
-                if let Some(fallback) = fallthrough {
+                if let Some((fallback, _flow)) = fallthrough {
                     val = Self::union2(val, Self::from_neg2(ck, fallback.id(), rec));
                 }
                 val

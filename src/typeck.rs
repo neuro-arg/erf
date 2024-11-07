@@ -50,6 +50,8 @@ pub enum PosPrim {
     Func(BTreeMap<usize, (Vec<IdSpan<NegPrim>>, IdSpan<Self>)>),
 }
 
+pub type Flow = (PosIdS, NegIdS);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NegPrim {
     Void,
@@ -63,8 +65,8 @@ pub enum NegPrim {
     },
     Record(String, IdSpan<Self>),
     Label {
-        cases: BTreeMap<LabelId, (IdSpan<Self>, bool)>,
-        fallthrough: Option<IdSpan<Self>>,
+        cases: BTreeMap<LabelId, (IdSpan<Self>, bool, Flow)>,
+        fallthrough: Option<(IdSpan<Self>, Flow)>,
     },
     Func(Vec<IdSpan<PosPrim>>, IdSpan<Self>),
 }
@@ -287,16 +289,17 @@ impl TypeCk {
                     Pos::Prim(PosPrim::Label(label1, _)),
                     Neg::Prim(NegPrim::Label { cases, fallthrough }),
                 ) => {
-                    let cases = if let Some((ty2, refutable)) = cases.get(label1) {
-                        Some(*ty2)
+                    let cases = if let Some((ty2, refutable, flow)) = cases.get(label1) {
+                        Some((*ty2, *flow))
                             .into_iter()
                             .chain(refutable.then(|| *fallthrough).flatten())
                     } else {
                         None.into_iter().chain(*fallthrough)
                     };
                     let mut handled = false;
-                    for case in cases {
+                    for (case, (flow_pos, flow_neg)) in cases {
                         self.q.enqueue(pos, case);
+                        self.q.enqueue(flow_pos, flow_neg);
                         handled = true;
                     }
                     if !handled {
@@ -356,11 +359,12 @@ impl TypeCk {
                 (
                     _,
                     Neg::Prim(NegPrim::Label {
-                        fallthrough: Some(fallthrough),
+                        fallthrough: Some((fallthrough, (flow_pos, flow_neg))),
                         ..
                     }),
                 ) => {
                     self.q.enqueue(pos, *fallthrough);
+                    self.q.enqueue(*flow_pos, *flow_neg);
                 }
                 (pos1, neg1) => {
                     println!("{pos1:?} {neg1:?}");
