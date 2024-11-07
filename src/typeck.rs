@@ -353,6 +353,15 @@ impl TypeCk {
                 (Pos::Prim(PosPrim::Label(_, ty)), _) => {
                     self.q.enqueue(*ty, neg);
                 }
+                (
+                    _,
+                    Neg::Prim(NegPrim::Label {
+                        fallthrough: Some(fallthrough),
+                        ..
+                    }),
+                ) => {
+                    self.q.enqueue(pos, *fallthrough);
+                }
                 (pos1, neg1) => {
                     println!("{pos1:?} {neg1:?}");
                     return Err(diag::TypeError::new(

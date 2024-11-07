@@ -2,6 +2,7 @@
 type Test;
 type Test1;
 wrap(Test1 x) => x;
-wrap(Test x) => x;
-main() => (fn(x) => x)(6); # (fn(f) => (f(Test1(fn(x) => x))))(wrap)(5);
+wrap(Test x) => 5;
+
+main() => (fn(f) => (f(Test1(fn(x) => x))))(wrap)(5);
 

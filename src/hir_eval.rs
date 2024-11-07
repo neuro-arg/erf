@@ -61,6 +61,7 @@ impl TryFrom<hir::Scope> for Scope {
 }
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
+    println!("{:#?}", term.inner);
     match term.inner {
         hir::TermInner::CheckTag {
             var,

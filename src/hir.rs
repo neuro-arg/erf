@@ -694,19 +694,25 @@ impl Ctx {
                             let arbitrary_bad_span = map[0].1[0].1.span;
                             let var = vars.pop_front();
                             for (tag, cases) in map {
-                                let var1 = if var.is_some() {
-                                    let var1 = ctx.ck.add_var(None, level);
-                                    let (var1_out, var1_inp) =
-                                        var1.polarize(&mut ctx.ck, arbitrary_bad_span);
-                                    vars.push_front((var1, var1_out));
-                                    Some((var1, var1_inp))
+                                // if tag map is empty and we're at tag None, don't rewrite the var
+                                let var1 = if let Some((var, var_out)) = var {
+                                    if tag.is_some() || !tag_map.is_empty() {
+                                        let var1 = ctx.ck.add_var(None, level);
+                                        let (var1_out, var1_inp) =
+                                            var1.polarize(&mut ctx.ck, arbitrary_bad_span);
+                                        vars.push_front((var1, var1_out));
+                                        Some((var1, var1_inp))
+                                    } else {
+                                        vars.push_front((var, var_out));
+                                        None
+                                    }
                                 } else {
                                     None
                                 };
                                 let (rest, refutable1) = compile_patterns_2(
                                     ctx, bindings, level, vars, cases,
                                 )?;
-                                if var.is_some() {
+                                if var1.is_some() {
                                     vars.pop_front();
                                 }
                                 let (out_pos1, out_neg) =
@@ -741,9 +747,23 @@ impl Ctx {
                                     );
                                 } else {
                                     refutable = refutable1;
-                                    if let Some((_var1, var1_inp)) = var1 {
-                                        ty_fallthrough = Some(var1_inp);
+                                    if let Some((var1, var1_inp)) = var1 {
+                                        let (var, var_out) = var.unwrap();
+                                        let rest = Term {
+                                            inner: TermInner::Bind {
+                                                bindings: Box::new([(
+                                                    var1,
+                                                    Term {
+                                                        inner: TermInner::VarAccess(var),
+                                                        ty: var_out,
+                                                    },
+                                                )]),
+                                                expr: Box::new(rest),
+                                            },
+                                            ty: out_pos1,
+                                        };
                                         fallthrough = Some(Box::new(rest));
+                                        ty_fallthrough = Some(var1_inp);
                                     } else {
                                         return Ok((rest, refutable1));
                                     }
