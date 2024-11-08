@@ -1,5 +1,5 @@
 //! This module has the most boring code I ever wrote in my life
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 
 use indexmap::IndexSet;
 
@@ -8,7 +8,7 @@ use crate::{
     Span,
 };
 
-use super::{NegPrim, PolarType, PosPrim, TypeCk, VarId, VarState};
+use super::{NegPrim, PolarType, PosPrim, Relevel, TypeCk, VarId, VarState};
 
 #[derive(Copy, Clone, Debug)]
 pub enum AnyIdRef<'a, T: PolarPrimitive> {
@@ -27,6 +27,8 @@ pub enum AnyIdMut<'a, T: PolarPrimitive> {
 pub trait PolarPrimitive: Clone + Eq + Hash {
     type Inverse: PolarPrimitive<Inverse = Self>;
     const POSITIVE: bool;
+    // reee no HKTs
+    fn relevel_data_mut(relevel: &mut Relevel) -> &mut HashMap<IdSpan<Self>, IdSpan<Self>>;
     fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>);
     fn typeck_data(ck: &TypeCk) -> &Vec<PolarType<Self>>;
     fn var_data_mut(var: &mut VarState) -> &mut IndexSet<IdSpan<Self>>;
@@ -38,6 +40,9 @@ pub trait PolarPrimitive: Clone + Eq + Hash {
 impl PolarPrimitive for PosPrim {
     type Inverse = NegPrim;
     const POSITIVE: bool = true;
+    fn relevel_data_mut(relevel: &mut Relevel) -> &mut HashMap<IdSpan<Self>, IdSpan<Self>> {
+        &mut relevel.ty_cache_1
+    }
     fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
         (&mut ck.pos, &mut ck.pos_spans)
     }
@@ -93,6 +98,9 @@ impl PolarPrimitive for PosPrim {
 impl PolarPrimitive for NegPrim {
     type Inverse = PosPrim;
     const POSITIVE: bool = false;
+    fn relevel_data_mut(relevel: &mut Relevel) -> &mut HashMap<IdSpan<Self>, IdSpan<Self>> {
+        &mut relevel.ty_cache_2
+    }
     fn typeck_data_mut(ck: &mut TypeCk) -> (&mut Vec<PolarType<Self>>, &mut Vec<Span>) {
         (&mut ck.neg, &mut ck.neg_spans)
     }

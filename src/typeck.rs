@@ -16,6 +16,9 @@ use crate::{
 mod polar;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RelevelId(usize);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LabelId(NonZeroUsize);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -86,12 +89,23 @@ pub type NegId = Id<NegPrim>;
 pub type PosIdS = IdSpan<PosPrim>;
 pub type NegIdS = IdSpan<NegPrim>;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct VarState {
     label: Option<String>,
     union: IndexSet<PosIdS>,
     inter: IndexSet<NegIdS>,
     level: u16,
+    relevels: BTreeMap<RelevelId, VarId>,
+}
+
+#[derive(Debug, Default)]
+pub struct Relevel {
+    // bool 1: pos processed, bool 2: neg processed
+    var_cache: HashMap<VarId, (VarId, bool, bool)>,
+    ty_cache_1: HashMap<IdSpan<PosPrim>, IdSpan<PosPrim>>,
+    ty_cache_2: HashMap<IdSpan<NegPrim>, IdSpan<NegPrim>>,
+    level: u16,
+    raise: bool,
 }
 
 #[derive(Debug, Default)]
@@ -109,6 +123,7 @@ pub struct TypeCk {
     pos_spans: Vec<Span>,
     neg_spans: Vec<Span>,
     labels: Vec<String>,
+    relevels: Vec<Relevel>,
 }
 
 impl ConstraintGraph {
@@ -316,18 +331,16 @@ impl TypeCk {
                 (Pos::Var(pos), neg0) => {
                     let pos = *pos;
                     let neg = if self.vars[pos.0].level < self.level(neg0) {
-                        self.change_level(
-                            neg,
-                            self.vars[pos.0].level,
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            true,
-                        )
+                        let relevel = self.add_relevel(self.vars[pos.0].level, true);
+                        self.relevel(neg, relevel)
                     } else {
                         neg
                     };
                     if self.vars[pos.0].inter.insert(neg) {
+                        for (relevel, pos1) in self.vars[pos.0].relevels.clone().iter() {
+                            let changed = self.relevel(neg, *relevel);
+                            self.vars[pos1.0].inter.insert(changed);
+                        }
                         for x in &self.vars[pos.0].union {
                             self.q.enqueue(*x, neg);
                         }
@@ -336,18 +349,16 @@ impl TypeCk {
                 (pos0, Neg::Var(neg)) => {
                     let neg = *neg;
                     let pos = if self.vars[neg.0].level < self.level(pos0) {
-                        self.change_level(
-                            pos,
-                            self.vars[neg.0].level,
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            &mut HashMap::new(),
-                            true,
-                        )
+                        let relevel = self.add_relevel(self.vars[neg.0].level, true);
+                        self.relevel(pos, relevel)
                     } else {
                         pos
                     };
                     if self.vars[neg.0].union.insert(pos) {
+                        for (relevel, neg1) in self.vars[neg.0].relevels.clone().iter() {
+                            let changed = self.relevel(pos, *relevel);
+                            self.vars[neg1.0].union.insert(changed);
+                        }
                         for y in &self.vars[neg.0].inter {
                             self.q.enqueue(pos, *y);
                         }
@@ -381,6 +392,16 @@ impl TypeCk {
         }
         Ok(())
     }
+    pub fn add_relevel(&mut self, level: u16, raise: bool) -> RelevelId {
+        self.relevels.push(Relevel {
+            level,
+            raise,
+            ty_cache_1: HashMap::new(),
+            ty_cache_2: HashMap::new(),
+            var_cache: HashMap::new(),
+        });
+        RelevelId(self.relevels.len() - 1)
+    }
     /// This is a function used for let polymorphism. Each time the let binding is used, it may
     /// have different types - for example, an identity function may have the type `bool -> bool`
     /// in one place and `int -> int` in another place. To achieve this, we need to quantify
@@ -412,16 +433,9 @@ impl TypeCk {
     ///
     /// For more info, see https://okmij.org/ftp/ML/generalization.html#levels and
     /// https://lptk.github.io/programming/2020/03/26/demystifying-mlsub.html#efficient-generalization
-    fn change_level<T: PolarPrimitive>(
-        &mut self,
-        ty: IdSpan<T>,
-        level: u16,
-        var_cache: &mut HashMap<VarId, (VarId, bool, bool)>,
-        ty_cache_1: &mut HashMap<IdSpan<T>, IdSpan<T>>,
-        ty_cache_2: &mut HashMap<IdSpan<T::Inverse>, IdSpan<T::Inverse>>,
-        raise: bool,
-    ) -> IdSpan<T> {
-        if let Some(entry) = ty_cache_1.get(&ty) {
+    fn relevel<T: PolarPrimitive>(&mut self, ty: IdSpan<T>, relevel_id: RelevelId) -> IdSpan<T> {
+        let mut relevel = &mut self.relevels[relevel_id.0];
+        if let Some(entry) = T::relevel_data_mut(relevel).get(&ty) {
             return *entry;
         }
         let ty1 = self.ty(ty.id());
@@ -429,39 +443,43 @@ impl TypeCk {
         for id in ty1.ids_mut() {
             match id {
                 AnyIdMut::Same(x) => {
-                    *x = self.change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
+                    *x = self.relevel(*x, relevel_id);
                 }
                 AnyIdMut::Inverse(x) => {
-                    *x = self.change_level(*x, level, var_cache, ty_cache_2, ty_cache_1, raise);
+                    *x = self.relevel(*x, relevel_id);
                 }
                 AnyIdMut::Var(var) => {
                     let var1 = *var;
-                    let (ret, ok1, ok2) = var_cache.entry(var1).or_insert_with(|| {
-                        (
-                            self.add_var(self.vars[var1.0].label.clone(), level),
-                            false,
-                            false,
-                        )
-                    });
+                    relevel = &mut self.relevels[relevel_id.0];
+                    let (ret, ok1, ok2) = if let Some(x) = relevel.var_cache.get_mut(&var1) {
+                        x
+                    } else {
+                        let level = self.relevels[relevel_id.0].level;
+                        let var2 = self.add_var(self.vars[var1.0].label.clone(), level);
+                        self.vars[var1.0].relevels.insert(relevel_id, var2);
+                        let x = (var2, false, false);
+                        relevel = &mut self.relevels[relevel_id.0];
+                        relevel.var_cache.insert(var1, x);
+                        relevel.var_cache.get_mut(&var1).unwrap()
+                    };
                     let (ok1, ok2) = if T::POSITIVE { (ok1, ok2) } else { (ok2, ok1) };
                     let ret = *ret;
                     if !*ok1 {
                         *ok1 = true;
-                        if raise {
+                        if relevel.raise {
+                            // connect this var to the other var
                             let neg = self.add_ty(PolarType::Var(ret), ty.span());
                             T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(neg);
-                        } else {
+                        } else if !*ok2 {
+                            // connect this var to whatever the other var is connected to
                             *ok2 = true;
                             for x in &T::Inverse::var_data(&self.vars[var1.0]).clone() {
-                                let x = self.change_level(
-                                    *x, level, var_cache, ty_cache_2, ty_cache_1, raise,
-                                );
+                                let x = self.relevel(*x, relevel_id);
                                 T::Inverse::var_data_mut(&mut self.vars[var1.0]).insert(x);
                             }
                         }
                         for x in &T::var_data(&self.vars[var1.0]).clone() {
-                            let x = self
-                                .change_level(*x, level, var_cache, ty_cache_1, ty_cache_2, raise);
+                            let x = self.relevel(*x, relevel_id);
                             T::var_data_mut(&mut self.vars[ret.0]).insert(x);
                         }
                     }
@@ -470,18 +488,13 @@ impl TypeCk {
             }
         }
         let ret = self.add_ty(ty1, ty.span());
-        ty_cache_1.insert(ty, ret);
+        relevel = &mut self.relevels[relevel_id.0];
+        T::relevel_data_mut(relevel).insert(ty, ret);
         ret
     }
     pub fn monomorphize<T: PolarPrimitive>(&mut self, ty: IdSpan<T>, level: u16) -> IdSpan<T> {
-        self.change_level(
-            ty,
-            level,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            false,
-        )
+        let relevel = self.add_relevel(level, false);
+        self.relevel(ty, relevel)
     }
     fn gv_node_id<T: PolarPrimitive>(&self, p: Id<T>) -> String {
         match self.ty(p) {
