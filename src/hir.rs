@@ -104,7 +104,7 @@ impl Bindings {
         }
         let ret = match name {
             "Equal" | "Less" | "Greater" | "f32" | "f64" | "i8" | "i16" | "i32" | "i64" | "u8"
-            | "u16" | "u32" | "u64" => {
+            | "u16" | "u32" | "u64" | "bool" => {
                 let id = ck.add_label(name.to_owned());
                 // spans are kinda wacky but whatever
                 let arg = ck.add_var(None, level);
@@ -136,7 +136,8 @@ impl Bindings {
             name if name.contains('_') => {
                 let (func, ty) = name.split_once('_').unwrap();
                 match func {
-                    "rem" | "coerce" => {
+                    "rem" | "add" | "mul" | "div" | "sub" | "quot" | "pow" | "shl" | "shr"
+                    | "bitxor" | "bitor" | "bitand" | "coerce" | "cmp" | "neg" => {
                         let TermMeta::Type(id) = self.get_intrinsic(ty, ck, level)?.1 else {
                             return None;
                         };
@@ -214,6 +215,10 @@ impl Bindings {
                                     Span::default(),
                                 ),
                             ),
+                            "bool" => (
+                                ck.add_ty(Neg::Prim(NegPrim::Bool), Span::default()),
+                                ck.add_ty(Pos::Prim(PosPrim::Bool), Span::default()),
+                            ),
                             _ => return None,
                         };
                         let neg = ck.add_ty(
@@ -228,7 +233,7 @@ impl Bindings {
                             Span::default(),
                         );
                         let pos = ck.add_ty(Pos::Prim(PosPrim::Label(id, pos)), Span::default());
-                        let unary = matches!(func, "coerce");
+                        let unary = matches!(func, "coerce" | "neg");
                         let mut ty = BTreeMap::new();
                         if unary {
                             ty.insert(1, (vec![neg], pos));
@@ -273,7 +278,7 @@ impl Bindings {
         };
         let (var, poly, type_id) = match var {
             VarType::Mono(var) => (var, false, None),
-            VarType::Poly(var) => (var, false, None),
+            VarType::Poly(var) => (var, true, None),
             VarType::TypeConstructor(var, id) => (var, true, Some(id)),
         };
         if let Some(lvl) = lvl {

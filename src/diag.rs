@@ -467,38 +467,45 @@ impl HumanType {
     pub fn from_neg(ck: &TypeCk, neg: NegId) -> Self {
         Self::from_neg2(ck, neg, &mut Default::default()).simplify(false)
     }
-    fn collect_vars(&self, out: &mut HashMap<TypeVar, usize>) {
+    fn collect_vars(&self, out: &mut HashMap<TypeVar, (bool, bool)>, pos: bool) {
         match self {
-            Self::Var(x) => *out.entry(*x).or_default() += 1,
+            Self::Var(x) => {
+                let a = out.entry(*x).or_default();
+                if pos {
+                    a.0 = true;
+                } else {
+                    a.1 = true;
+                }
+            }
             Self::Top
             | Self::Bot
             | Self::Void
             | Self::Bool
             | Self::Int { .. }
             | Self::Float { .. } => {}
-            Self::Record(x) => x.values().for_each(|x| x.collect_vars(out)),
+            Self::Record(x) => x.values().for_each(|x| x.collect_vars(out, pos)),
             Self::Func(a, b) => {
                 for x in a {
-                    x.collect_vars(out);
+                    x.collect_vars(out, !pos);
                 }
-                b.collect_vars(out);
+                b.collect_vars(out, pos);
             }
             Self::Recursive(a, b) => {
-                *out.entry(*a).or_default() += 1;
-                b.collect_vars(out);
+                let a = out.entry(*a).or_default();
+                if pos {
+                    a.0 = true;
+                } else {
+                    a.1 = true;
+                }
+                b.collect_vars(out, pos);
             }
-            Self::Tagged(_, b) => b.collect_vars(out),
-            Self::Union(x) | Self::Intersection(x) => x.iter().for_each(|x| x.collect_vars(out)),
+            Self::Tagged(_, b) => b.collect_vars(out, pos),
+            Self::Union(x) | Self::Intersection(x) => {
+                x.iter().for_each(|x| x.collect_vars(out, pos))
+            }
         }
     }
-    fn direct_contains(&self, var: TypeVar) -> bool {
-        match self {
-            Self::Var(x) if *x == var => true,
-            Self::Union(x) | Self::Intersection(x) => x.iter().any(|x| x.direct_contains(var)),
-            _ => false,
-        }
-    }
-    fn simplify_vec(v: Vec<Self>, vars: &HashMap<TypeVar, usize>, pos: bool) -> Vec<Self> {
+    fn simplify_vec(v: Vec<Self>, vars: &HashMap<TypeVar, (bool, bool)>, pos: bool) -> Vec<Self> {
         v.into_iter()
             .flat_map(|x| match x.simplify2(vars, pos) {
                 Self::Top | Self::Bot => vec![],
@@ -508,9 +515,19 @@ impl HumanType {
             })
             .collect()
     }
-    fn simplify2(self, vars: &HashMap<TypeVar, usize>, pos: bool) -> Self {
+    fn simplify2(self, vars: &HashMap<TypeVar, (bool, bool)>, pos: bool) -> Self {
         match self {
-            Self::Var(x) if *vars.get(&x).unwrap() <= 1 => {
+            Self::Var(x)
+                if {
+                    let x = vars.get(&x).unwrap();
+                    if pos {
+                        !x.1
+                    } else {
+                        !x.0
+                    };
+                    true
+                } =>
+            {
                 if pos {
                     Self::Bot
                 } else {
@@ -534,19 +551,31 @@ impl HumanType {
                 }
             }
             Self::Func(a, b) => Self::Func(
-                a.into_iter().map(|x| x.simplify2(vars, pos)).collect(),
+                a.into_iter().map(|x| x.simplify2(vars, !pos)).collect(),
                 Box::new(b.simplify2(vars, pos)),
             ),
             Self::Recursive(a, b) => {
                 let b = b.simplify2(vars, pos);
                 Self::Recursive(a, Box::new(b))
             }
-            x => x.clone(),
+            Self::Tagged(a, b) => Self::Tagged(a, Box::new(b.simplify2(vars, pos))),
+            Self::Record(x) => Self::Record(
+                x.into_iter()
+                    .map(|(k, v)| (k, v.simplify2(vars, pos)))
+                    .collect(),
+            ),
+            x @ (Self::Top
+            | Self::Bot
+            | Self::Bool
+            | Self::Void
+            | Self::Int { .. }
+            | Self::Float { .. }
+            | Self::Var(_)) => x,
         }
     }
     fn simplify(self, pos: bool) -> Self {
         let mut vars = Default::default();
-        self.collect_vars(&mut vars);
+        self.collect_vars(&mut vars, pos);
         self.simplify2(&vars, pos)
     }
 }
