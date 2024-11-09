@@ -121,11 +121,11 @@ impl PolarPrimitive for NegPrim {
                     .map(|(case, _refutable, flow)| (case, flow))
                     .chain(fallthrough.iter().map(|(case, flow)| (case, flow)))
                     .flat_map(|(case, flow)| {
-                        [
-                            AnyIdRef::Same(case),
-                            AnyIdRef::Inverse(&flow.0),
-                            AnyIdRef::Same(&flow.1),
-                        ]
+                        [AnyIdRef::Same(case)].into_iter().chain(
+                            flow.iter().flat_map(|flow| {
+                                [AnyIdRef::Inverse(&flow.0), AnyIdRef::Same(&flow.1)]
+                            }),
+                        )
                     }),
             )),
             Self::Func(a, b) => IterEither::A(IterEither::B(
@@ -145,11 +145,11 @@ impl PolarPrimitive for NegPrim {
                     .map(|(case, _refutable, flow)| (case, flow))
                     .chain(fallthrough.iter_mut().map(|(case, flow)| (case, flow)))
                     .flat_map(|(case, flow)| {
-                        [
-                            AnyIdMut::Same(case),
-                            AnyIdMut::Inverse(&mut flow.0),
-                            AnyIdMut::Same(&mut flow.1),
-                        ]
+                        [AnyIdMut::Same(case)]
+                            .into_iter()
+                            .chain(flow.iter_mut().flat_map(|flow| {
+                                [AnyIdMut::Inverse(&mut flow.0), AnyIdMut::Same(&mut flow.1)]
+                            }))
                     }),
             )),
             Self::Func(a, b) => IterEither::A(IterEither::B(

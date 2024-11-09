@@ -53,7 +53,7 @@ pub enum PosPrim {
     Func(BTreeMap<usize, (Vec<IdSpan<NegPrim>>, IdSpan<Self>)>),
 }
 
-pub type Flow = (PosIdS, NegIdS);
+pub type Flow = Option<(PosIdS, NegIdS)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NegPrim {
@@ -312,9 +312,11 @@ impl TypeCk {
                         None.into_iter().chain(*fallthrough)
                     };
                     let mut handled = false;
-                    for (case, (flow_pos, flow_neg)) in cases {
+                    for (case, flow) in cases {
                         self.q.enqueue(pos, case);
-                        self.q.enqueue(flow_pos, flow_neg);
+                        if let Some((flow_pos, flow_neg)) = flow {
+                            self.q.enqueue(flow_pos, flow_neg);
+                        }
                         handled = true;
                     }
                     if !handled {
@@ -370,12 +372,14 @@ impl TypeCk {
                 (
                     _,
                     Neg::Prim(NegPrim::Label {
-                        fallthrough: Some((fallthrough, (flow_pos, flow_neg))),
+                        fallthrough: Some((fallthrough, flow)),
                         ..
                     }),
                 ) => {
                     self.q.enqueue(pos, *fallthrough);
-                    self.q.enqueue(*flow_pos, *flow_neg);
+                    if let Some((flow_pos, flow_neg)) = flow {
+                        self.q.enqueue(*flow_pos, *flow_neg);
+                    }
                 }
                 (_pos1, _neg1) => {
                     // println!("{pos1:?} {neg1:?}");

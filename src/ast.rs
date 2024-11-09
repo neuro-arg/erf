@@ -3,7 +3,41 @@ use std::{collections::BTreeMap, fmt::Display};
 use crate::Span;
 
 pub type Ident = String;
-pub type QualifiedIdent = Vec<String>;
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QualifiedIdent(pub Vec<String>);
+impl QualifiedIdent {
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+impl IntoIterator for QualifiedIdent {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a QualifiedIdent {
+    type Item = &'a String;
+    type IntoIter = std::slice::Iter<'a, String>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl Display for QualifiedIdent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        for x in &self.0 {
+            if first {
+                first = false;
+            } else {
+                f.write_str("::")?;
+            }
+            f.write_str(&x)?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -154,16 +188,16 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PatternInner {
-    Tag(String, Span, Box<Pattern>),
-    Variable(String),
+    Tag(QualifiedIdent, Span, Box<Pattern>),
+    Variable(Ident),
 }
 
 impl PatternInner {
     pub fn var(s: impl Into<String>) -> Self {
         Self::Variable(s.into())
     }
-    pub fn tag(s: impl Into<String>, span: Span, pat: Pattern) -> Self {
-        Self::Tag(s.into(), span, Box::new(pat))
+    pub fn tag(s: QualifiedIdent, span: Span, pat: Pattern) -> Self {
+        Self::Tag(s, span, Box::new(pat))
     }
 }
 

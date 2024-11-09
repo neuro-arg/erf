@@ -6,6 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
+    ast::QualifiedIdent,
     typeck::{Neg, NegId, NegPrim, Pos, PosId, PosPrim, TypeCk, VarId},
     Span,
 };
@@ -553,14 +554,18 @@ impl HumanType {
 #[derive(Debug, Error)]
 pub struct NameNotFoundError {
     span: Span,
-    name: String,
+    name: QualifiedIdent,
     is_type: bool,
 }
 
 impl NameNotFoundError {
-    pub fn new(name: impl Into<String>, span: Span, is_type: bool) -> Self {
+    pub fn new<S: AsRef<str>>(
+        name: impl IntoIterator<Item = S>,
+        span: Span,
+        is_type: bool,
+    ) -> Self {
         Self {
-            name: name.into(),
+            name: QualifiedIdent(name.into_iter().map(|x| x.as_ref().to_owned()).collect()),
             span,
             is_type,
         }

@@ -1,8 +1,8 @@
 # test
 type Test;
 type Test1;
-wrap(Test1 x) => x;
-wrap(Test x) => 5;
+isOdd(Test x, Test1 y) => 5;
+isOdd(Test1 x, Test y) => 6;
 
-main() => (fn(f) => (f(Test1(fn(x) => x))))(wrap)(5);
+main() => isOdd(Test1 5, Test 6);
 

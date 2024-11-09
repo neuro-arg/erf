@@ -14,7 +14,7 @@ pub enum Value {
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
-    Intrinsic(hir::Intrinsic),
+    Intrinsic(String),
     Tagged(LabelId, Box<Value>),
 }
 

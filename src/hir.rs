@@ -29,7 +29,7 @@ pub enum Value {
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
-    Intrinsic(Intrinsic),
+    Intrinsic(String),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -65,31 +65,6 @@ pub enum TermInner {
     If(Box<Term>, Box<Term>, Box<Term>),
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Intrinsic {
-    UnaryNot,
-    BinaryPow,
-    BinaryMul,
-    BinaryDiv,
-    BinaryFloorDiv,
-    BinaryRem,
-    BinaryAdd,
-    BinarySub,
-    BinaryShl,
-    BinaryShr,
-    BinaryBitAnd,
-    BinaryBitXor,
-    BinaryBitOr,
-    BinaryEq,
-    BinaryNe,
-    BinaryLt,
-    BinaryGt,
-    BinaryLe,
-    BinaryGe,
-    BinaryAnd,
-    BinaryOr,
-}
-
 #[derive(Clone, Debug)]
 pub struct Term {
     pub inner: TermInner,
@@ -101,13 +76,8 @@ type VarOrder = (BTreeMap<VarId, BTreeSet<VarId>>, Option<VarId>);
 #[derive(Clone, Default)]
 pub struct Bindings {
     ck_map: HashMap<String, Vec<(VarType, Option<usize>)>>,
+    intrinsics: HashMap<String, (Term, TermMeta)>,
     orders: Vec<VarOrder>,
-}
-
-#[derive(Clone, Debug)]
-struct Binding {
-    var: VarId,
-    term: Term,
 }
 
 impl Bindings {
@@ -123,19 +93,187 @@ impl Bindings {
     pub fn contains(&self, s: &str) -> bool {
         self.ck_map.get(s).is_some_and(|x| !x.is_empty())
     }
-    pub fn get(
+    fn get_intrinsic(
         &mut self,
-        s: &str,
+        name: &str,
+        ck: &mut TypeCk,
+        level: u16,
+    ) -> Option<(Term, TermMeta)> {
+        if let Some(ret) = self.intrinsics.get(name) {
+            return Some(ret.clone());
+        }
+        let ret = match name {
+            "Equal" | "Less" | "Greater" | "f32" | "f64" | "i8" | "i16" | "i32" | "i64" | "u8"
+            | "u16" | "u32" | "u64" => {
+                let id = ck.add_label(name.to_owned());
+                // spans are kinda wacky but whatever
+                let arg = ck.add_var(None, level);
+                let (arg_out, arg_inp) = arg.polarize(ck, Span::default());
+                let ret_out = ck.add_ty(Pos::Prim(PosPrim::Label(id, arg_out)), Span::default());
+                let mut ty = BTreeMap::new();
+                ty.insert(1, (vec![arg_inp], ret_out));
+                let ty = Pos::Prim(PosPrim::Func(ty));
+                let ty = ck.add_ty(ty, Span::default());
+                let term = Term {
+                    inner: TermInner::AttachTag(
+                        id,
+                        Box::new(Term {
+                            inner: TermInner::VarAccess(arg),
+                            ty: arg_out,
+                        }),
+                    ),
+                    ty: ret_out,
+                };
+                let lambda = [(1, (vec![arg], term))].into_iter().collect();
+                (
+                    Term {
+                        inner: TermInner::Value(Value::Lambda(lambda)),
+                        ty,
+                    },
+                    TermMeta::Type(id),
+                )
+            }
+            name if name.contains('_') => {
+                let (func, ty) = name.split_once('_').unwrap();
+                match func {
+                    "rem" | "coerce" => {
+                        let TermMeta::Type(id) = self.get_intrinsic(ty, ck, level)?.1 else {
+                            return None;
+                        };
+
+                        let (neg, pos) = match ty {
+                            "f32" => (
+                                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 32 }), Span::default()),
+                                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 32 }), Span::default()),
+                            ),
+                            "f64" => (
+                                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 64 }), Span::default()),
+                                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 64 }), Span::default()),
+                            ),
+                            "i8" | "u8" => (
+                                ck.add_ty(
+                                    Neg::Prim(NegPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 8,
+                                    }),
+                                    Span::default(),
+                                ),
+                                ck.add_ty(
+                                    Pos::Prim(PosPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 8,
+                                    }),
+                                    Span::default(),
+                                ),
+                            ),
+                            "i16" | "u16" => (
+                                ck.add_ty(
+                                    Neg::Prim(NegPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 16,
+                                    }),
+                                    Span::default(),
+                                ),
+                                ck.add_ty(
+                                    Pos::Prim(PosPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 16,
+                                    }),
+                                    Span::default(),
+                                ),
+                            ),
+                            "i32" | "u32" => (
+                                ck.add_ty(
+                                    Neg::Prim(NegPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 32,
+                                    }),
+                                    Span::default(),
+                                ),
+                                ck.add_ty(
+                                    Pos::Prim(PosPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 32,
+                                    }),
+                                    Span::default(),
+                                ),
+                            ),
+                            "i64" | "u64" => (
+                                ck.add_ty(
+                                    Neg::Prim(NegPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 64,
+                                    }),
+                                    Span::default(),
+                                ),
+                                ck.add_ty(
+                                    Pos::Prim(PosPrim::Int {
+                                        signed: ty.starts_with('i'),
+                                        bits: 64,
+                                    }),
+                                    Span::default(),
+                                ),
+                            ),
+                            _ => return None,
+                        };
+                        let neg = ck.add_ty(
+                            Neg::Prim(NegPrim::Label {
+                                cases: {
+                                    let mut cases = BTreeMap::new();
+                                    cases.insert(id, (neg, false, None));
+                                    cases
+                                },
+                                fallthrough: None,
+                            }),
+                            Span::default(),
+                        );
+                        let pos = ck.add_ty(Pos::Prim(PosPrim::Label(id, pos)), Span::default());
+                        let unary = matches!(func, "coerce");
+                        let mut ty = BTreeMap::new();
+                        if unary {
+                            ty.insert(1, (vec![neg], pos));
+                        } else {
+                            ty.insert(2, (vec![neg, neg], pos));
+                        }
+                        (
+                            Term {
+                                inner: TermInner::Value(Value::Intrinsic(name.to_owned())),
+                                ty: ck.add_ty(Pos::Prim(PosPrim::Func(ty)), Span::default()),
+                            },
+                            TermMeta::None,
+                        )
+                    }
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        self.intrinsics.insert(name.to_owned(), ret.clone());
+        Some(ret)
+    }
+    pub fn get<S: AsRef<str>>(
+        &mut self,
+        s: &[S],
         span: Span,
         ck: &mut TypeCk,
         level: u16,
-    ) -> Result<Option<(VarId, PosIdS, TermMeta)>, diag::Error> {
-        let Some((var, lvl)) = self.ck_map.get(s).and_then(|x| x.last()) else {
+    ) -> Result<Option<(Term, TermMeta)>, diag::Error> {
+        let (module, s) = match &s {
+            [s] => (None, s),
+            [a, b] => (Some(a), b),
+            _ => return Ok(None),
+        };
+        match module.map(|x| x.as_ref()) {
+            Some("intrinsic") => return Ok(self.get_intrinsic(s.as_ref(), ck, level)),
+            Some(_) => return Ok(None),
+            None => {}
+        }
+        let Some((var, lvl)) = self.ck_map.get(s.as_ref()).and_then(|x| x.last()) else {
             return Ok(None);
         };
         let (var, poly, type_id) = match var {
             VarType::Mono(var) => (var, false, None),
-            VarType::Poly(var) => (var, true, None),
+            VarType::Poly(var) => (var, false, None),
             VarType::TypeConstructor(var, id) => (var, true, Some(id)),
         };
         if let Some(lvl) = lvl {
@@ -147,9 +285,12 @@ impl Bindings {
         }
         let ty = ck.add_ty(Pos::Var(*var), span);
         let ty = if poly { ck.monomorphize(ty, level) } else { ty };
+
         Ok(Some((
-            *var,
-            ty,
+            Term {
+                inner: TermInner::VarAccess(*var),
+                ty,
+            },
             if let Some(id) = type_id {
                 TermMeta::Type(*id)
             } else {
@@ -157,9 +298,9 @@ impl Bindings {
             },
         )))
     }
-    pub fn get_type(
+    pub fn get_type<S: AsRef<str>>(
         &mut self,
-        tag: &str,
+        tag: &[S],
         span: Span,
         ck: &mut TypeCk,
         level: u16,
@@ -168,7 +309,7 @@ impl Bindings {
             .get(tag, span, ck, level)?
             .ok_or_else(|| diag::Error::NameNotFound(NameNotFoundError::new(tag, span, false)))?
         {
-            (_, _, TermMeta::Type(tag)) => Ok(tag),
+            (_, TermMeta::Type(tag)) => Ok(tag),
             _ => Err(diag::Error::NameNotFound(NameNotFoundError::new(
                 tag, span, true,
             ))),
@@ -529,6 +670,7 @@ impl Ctx {
                                         bindings.insert_ck(x.clone(), VarType::Mono(arg), false);
                                         let (rest, refutable1) = compile_patterns_1(ctx, bindings, level, vars, cases)?;
                                         bindings.remove_ck(x);
+                                        vars.push_front((var, var_pos));
                                         let arg_inp = ctx.ck.add_ty(Neg::Var(arg), span);
                                         ctx.ck.flow(var_pos, arg_inp)?;
                                         let rest = Term {
@@ -610,8 +752,8 @@ impl Ctx {
                                         if bindings.contains(x) =>
                                     {
                                         let span = pat.as_ref().unwrap().span;
-                                        let (_var, _var_pos, meta) = bindings
-                                            .get(x, span, &mut ctx.ck, level)?
+                                        let (_var, meta) = bindings
+                                            .get(std::slice::from_ref(x), span, &mut ctx.ck, level)?
                                             .unwrap();
                                         match meta {
                                             TermMeta::Type(_) => todo!("TODO proper error, do Type _ instead of just Type, or maybe I should handle this in the previous case that deals with tags"),
@@ -672,7 +814,7 @@ impl Ctx {
                                         ast::PatternInner::Tag(tag, span, x1) => Ok((
                                             Some((
                                                 bindings.get_type(
-                                                    &tag,
+                                                    &tag.0,
                                                     span,
                                                     &mut ctx.ck,
                                                     level,
@@ -743,6 +885,9 @@ impl Ctx {
                                 )?;
                                 if var1.is_some() {
                                     vars.pop_front();
+                                    if let Some(var) = var {
+                                        vars.push_front(var);
+                                    }
                                 }
                                 let (out_pos1, out_neg) =
                                     out.polarize(&mut ctx.ck, arbitrary_bad_span);
@@ -756,7 +901,7 @@ impl Ctx {
                                     }
                                     let (var, var_out) = var.unwrap();
                                     let (var1, var1_inp) = var1.unwrap();
-                                    ty_tag_map.insert(tag, (var1_inp, refutable1, (rest.ty, out_neg)));
+                                    ty_tag_map.insert(tag, (var1_inp, refutable1, Some((rest.ty, out_neg))));
                                     tag_map.insert(
                                         tag,
                                         Term {
@@ -790,7 +935,7 @@ impl Ctx {
                                             },
                                             ty: out_pos1,
                                         };
-                                        ty_fallthrough = Some((var1_inp, (rest.ty, out_neg)));
+                                        ty_fallthrough = Some((var1_inp, Some((rest.ty, out_neg))));
                                         fallthrough = Some(Box::new(rest));
                                     } else {
                                         return Ok((rest, refutable1));
@@ -845,7 +990,7 @@ impl Ctx {
             ast::ExprInner::TypeConstructor(ident) => {
                 assert!(exprs.next().is_none());
                 // spans are kinda wacky but whatever
-                let id = bindings.get_type(&ident, expr.span, &mut self.ck, level)?;
+                let id = bindings.get_type(&[ident], expr.span, &mut self.ck, level)?;
                 let arg = self.ck.add_var(None, level);
                 let (arg_out, arg_inp) = arg.polarize(&mut self.ck, expr.span);
                 let ret_out = self
@@ -975,30 +1120,11 @@ impl Ctx {
             }
             ast::ExprInner::Variable(var) => {
                 assert!(exprs.next().is_none());
-                let var = match *var.as_slice() {
-                    [ref x] => x,
-                    [ref x, ..] => {
-                        let len = x.len();
-                        return Err(diag::NameNotFoundError::new(
-                            x,
-                            Span {
-                                right: expr.span.left + len,
-                                ..expr.span
-                            },
-                            false,
-                        )
-                        .into());
-                    }
-                    _ => unreachable!(),
-                };
-                let (var, ty, meta) = bindings
-                    .get(var, expr.span, &mut self.ck, level)?
-                    .ok_or_else(|| diag::NameNotFoundError::new(var, expr.span, false))?;
+                let (term, meta) = bindings
+                    .get(&var.0, expr.span, &mut self.ck, level)?
+                    .ok_or_else(|| diag::NameNotFoundError::new(&var.0, expr.span, false))?;
                 return Ok((
-                    Term {
-                        inner: TermInner::VarAccess(var),
-                        ty,
-                    },
+                    term,
                     meta,
                 ));
             }

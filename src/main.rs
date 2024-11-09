@@ -108,7 +108,7 @@ impl ParseCtx {
     }
     pub fn pattern_tagged(
         &mut self,
-        tags: impl Construct<Vec<(Ident, Span)>>,
+        tags: impl Construct<Vec<(QualifiedIdent, Span)>>,
         pat: impl Construct<ast::Pattern>,
         _span: impl Construct<Span>,
     ) -> ast::Pattern {
@@ -279,11 +279,15 @@ fn main() {
     let handle = std::process::Command::new("dot")
         .args(["types.dot", "-Tpng", "-o", "types.png"])
         .spawn();
-    let (main_var, ty, _meta) = match bindings
-        .get("main", Span::default(), &mut ctx.ck, 0)
+    let (main_term, _meta) = match bindings
+        .get(&["main"], Span::default(), &mut ctx.ck, 0)
         .transpose()
         .ok_or_else(|| {
-            diag::Error::NameNotFound(diag::NameNotFoundError::new("main", Span::default(), false))
+            diag::Error::NameNotFound(diag::NameNotFoundError::new(
+                ["main"],
+                Span::default(),
+                false,
+            ))
         })
         .and_then(|x| x)
     {
@@ -294,18 +298,13 @@ fn main() {
         }
     };
     println!("hir -> value");
+    let ty = main_term.ty;
     println!(
         "{:?}",
         hir_eval::eval_term(
             &mut scope.try_into().unwrap(),
             hir::Term {
-                inner: hir::TermInner::Application(
-                    Box::new(hir::Term {
-                        inner: hir::TermInner::VarAccess(main_var),
-                        ty,
-                    }),
-                    vec![]
-                ),
+                inner: hir::TermInner::Application(Box::new(main_term), vec![]),
                 ty: {
                     let mut vis = BTreeSet::new();
                     vis.insert(ty.id());

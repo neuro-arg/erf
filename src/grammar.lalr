@@ -11,14 +11,36 @@ Comma<T>: Vec<T> = {
     }
 };
 
-Ident: Ident = <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>);
-Namespace: Ident = {
-    <Ident> "::",
+Operator = {
+    "!",
+    "~",
+    "**",
+    "*",
+    "/",
+    "//",
+    "%",
+    "+",
+    "-",
+    "<<",
+    ">>",
+    "&",
+    "^",
+    "|",
+    "==",
+    "!=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+};
+
+Ident: Ident = {
+    <r"(?:\p{XID_Start}|_)\p{XID_Continue}*"> => String::from(<>),
 };
 QualifiedIdent: QualifiedIdent = {
-    <mut n:Namespace*> <x:Ident> => {
+    <mut n:(<Ident>"::")*> <x:Ident> => {
     	n.push(x);
-	n
+	QualifiedIdent(n)
     },
 };
 IntLiteral: String = {
@@ -28,7 +50,7 @@ FloatLiteral: String =
     <r"-?(?:0|[1-9]\d*)\.\d*(?:[eE][+-]?\d+)?"> => String::from(<>);
 
 VarOrLit: Expr = {
-    <l: @L> <x:QualifiedIdent> <r: @R> => match x.as_slice() {
+    <l: @L> <x:QualifiedIdent> <r: @R> => match x.0.as_slice() {
         &[ref x] if matches!(x.as_str(), "false" | "true") => ctx.expr_literal(ast::LiteralKind::Bool, x.clone(), (l, r)),
         _ => ctx.expr_var(x, (l, r))
     },
@@ -42,6 +64,7 @@ BasicTerm = {
 
 Term: Expr = {
     <BasicTerm>,
+    <l: @L> "(" <x:Operator> ")" <r: @R> => ctx.expr_var(QualifiedIdent(vec![x.to_owned()]), (l, r)),
     "(" Comment* <Expr> ")" Comment*,
     // call
     <l: @L> <a:Term> "(" <b:Comma<Expr>> ")" <r: @R> => {
@@ -168,12 +191,17 @@ Expr: Expr = {
     },
 };
 
+IdentOrOperator = {
+    "(" <Operator> ")" => <>.to_owned(),
+    <Ident>,
+};
+
 LetBindingArm: LetArm = {
-    <l: @L> <x:Ident> <r0: @R> Comment* "=" Comment* <b:Expr> ";" <r: @R> Comment* => {
+    <l: @L> <x:IdentOrOperator> <r0: @R> Comment* "=" Comment* <b:Expr> ";" <r: @R> Comment* => {
         let p = ctx.let_pattern_var(x, (l, r));
         ctx.let_arm(p, b, (l, r))
     },
-    <l: @L> <x:Ident> Comment* "(" Comment* <args:Comma<Pattern>> ")" <r0: @R> Comment* "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
+    <l: @L> <x:IdentOrOperator> Comment* "(" Comment* <args:Comma<Pattern>> ")" <r0: @R> Comment* "=>" Comment* <b:Expr> ";" <r: @R> Comment* => {
         let p = ctx.let_pattern_func(x, args, (l, r0));
         ctx.let_arm(p, b, (l, r))
     },
@@ -187,8 +215,11 @@ BasicPattern: Pattern = {
     "(" Comment* <Pattern> ")" Comment*,
     <l: @L> <x:Ident> <r: @R> Comment* => ctx.pattern_var(x, (l, r)),
 };
-IdentCommentSpan: (Ident, (usize, usize)) = {
-    <l: @L> <x:Ident> <r: @R> Comment* => (x, (l, r)),
+IdentCommentSpan: (QualifiedIdent, (usize, usize)) = {
+    <l: @L> <mut y:(<Ident> "::")*> <x:Ident> <r: @R> Comment* => {
+        y.push(x);
+	(QualifiedIdent(y), (l, r))
+    }
 };
 Pattern: Pattern = {
     <l: @L> <t:IdentCommentSpan*> <x:BasicPattern> <r: @R> => ctx.pattern_tagged(Wrapper(t), x, (l, r)),
