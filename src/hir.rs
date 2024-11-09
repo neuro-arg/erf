@@ -2,11 +2,11 @@
 // it's the best choice for stuff like constant folding
 
 use std::{
-    collections::{BTreeMap, HashMap, LinkedList},
+    collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     str::FromStr,
 };
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use itertools::Itertools;
 use malachite::num::logic::traits::SignificantBits;
 use smallvec::SmallVec;
@@ -96,7 +96,7 @@ pub struct Term {
     pub ty: PosIdS,
 }
 
-type VarOrder = IndexSet<VarId>;
+type VarOrder = (BTreeMap<VarId, BTreeSet<VarId>>, Option<VarId>);
 
 #[derive(Clone, Default)]
 pub struct Bindings {
@@ -140,7 +140,9 @@ impl Bindings {
         };
         if let Some(lvl) = lvl {
             if !self.orders.is_empty() {
-                self.orders[*lvl].insert(*var);
+                if let Some(cur) = self.orders[*lvl].1 {
+                    self.orders[*lvl].0.entry(cur).or_default().insert(*var);
+                }
             }
         }
         let ty = ck.add_ty(Pos::Var(*var), span);
@@ -182,8 +184,11 @@ impl Bindings {
             to_pop.push(ident.clone());
             self.insert_ck(ident, var, true);
         }
-        self.orders.push(IndexSet::new());
+        self.orders.push((BTreeMap::new(), None));
         to_pop
+    }
+    fn mark_cur(&mut self, var: VarId) {
+        self.orders.last_mut().unwrap().1 = Some(var);
     }
     /// Execute `func` in a new scope.
     ///
@@ -250,6 +255,35 @@ pub enum TermMeta {
     Type(LabelId),
 }
 
+fn toposort(
+    vars: Vec<(VarId, Term)>,
+    mut order: BTreeMap<VarId, BTreeSet<VarId>>,
+) -> Vec<(VarId, Term)> {
+    let mut vars: BTreeMap<VarId, Term> = vars.into_iter().collect();
+    fn vis(
+        var: VarId,
+        vars: &mut BTreeMap<VarId, Term>,
+        order: &mut BTreeMap<VarId, BTreeSet<VarId>>,
+        out: &mut Vec<(VarId, Term)>,
+    ) {
+        let Some(term) = vars.remove(&var) else {
+            return;
+        };
+        if let Some(order1) = order.remove(&var) {
+            for var in order1 {
+                vis(var, vars, order, out);
+            }
+        }
+        out.push((var, term));
+    }
+    let mut ret = Vec::new();
+    let all_vars = vars.keys().copied().collect::<Vec<_>>();
+    for var in all_vars {
+        vis(var, &mut vars, &mut order, &mut ret);
+    }
+    ret
+}
+
 impl Ctx {
     fn alloc_var(
         &mut self,
@@ -279,7 +313,6 @@ impl Ctx {
                 }
                 let is_type = matches!(def.body.inner, ast::ExprInner::TypeConstructor(_));
                 let var = self.ck.add_var(Some(ident.clone()), level + 1);
-                // its span is to be the pattern's span
                 let (var_out, var_inp) = var.polarize(&mut self.ck, def.pattern.span);
                 Ok((
                     (is_type, ident.clone(), var, var_out),
@@ -371,6 +404,7 @@ impl Ctx {
                     |bindings| {
                         let mut vars = Vec::new();
                         for (var, var_inp, expr1) in exprs {
+                            bindings.mark_cur(var);
                             let expr1 = self.lower_expr(bindings, expr1, level + 1)?.0;
                             // now direct expr1 to var_inp (assignment)
                             self.ck.flow(expr1.ty, var_inp)?;
@@ -382,8 +416,8 @@ impl Ctx {
                         Ok::<_, diag::Error>((expr, vars))
                     },
                 );
-                let (expr, mut vars) = res?;
-                vars.sort_by(|a, b| order.get_index_of(&b.0).cmp(&order.get_index_of(&a.0)));
+                let (expr, vars) = res?;
+                let vars = toposort(vars, order.0);
                 Ok(Term {
                     ty: expr.ty,
                     inner: TermInner::Bind {
@@ -994,19 +1028,17 @@ impl Ctx {
                 })
                 .collect(),
         );
-        let mut scope = Scope::default();
+        let mut vars = Vec::new();
         for (var, var_inp, expr1) in exprs {
+            bindings.mark_cur(var);
             let expr1 = self.lower_expr(&mut bindings, expr1, level + 1)?.0;
-            // now direct expr1 to var_inp (assignment)
             self.ck.flow(expr1.ty, var_inp)?;
-            // and actually bind this variable
-            scope.insert(var, expr1);
-            // vars.0.push((var, expr1));
+            vars.push((var, expr1));
         }
         let order = bindings.orders.pop().unwrap();
-        scope
-            .map
-            .sort_by(|a, _, b, _| order.get_index_of(b).cmp(&order.get_index_of(a)));
+        let vars = toposort(vars, order.0);
+        let mut scope = Scope::default();
+        scope.extend(vars);
         Ok((bindings, scope))
     }
 }

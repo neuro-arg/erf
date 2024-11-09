@@ -273,7 +273,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // println!("{:#?}", scope);
+    // println!("{:?}", scope.map.keys());
     let graph = ctx.ck.graphviz(&text);
     std::fs::write("types.dot", graph).unwrap();
     let handle = std::process::Command::new("dot")

@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use indexmap::IndexMap;
 
 use crate::{
     diag::Error,
@@ -18,7 +20,7 @@ pub enum Value {
 
 #[derive(Clone, Debug, Default)]
 pub struct Scope {
-    vars: HashMap<VarId, Vec<Value>>,
+    vars: IndexMap<VarId, Vec<Value>>,
 }
 
 #[derive(Debug, Default)]
@@ -61,7 +63,7 @@ impl TryFrom<hir::Scope> for Scope {
 }
 
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
-    // println!("{:#?}", term.inner);
+    // println!("eval in {:?}", scope.vars.keys().collect::<Vec<_>>());
     match term.inner {
         hir::TermInner::CheckTag {
             var,
@@ -117,7 +119,15 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             hir::Value::Float(x) => Value::Float(x),
             hir::Value::Intrinsic(x) => Value::Intrinsic(x),
         }),
-        hir::TermInner::VarAccess(var) => Ok(scope.get(var).unwrap().clone()),
+        hir::TermInner::VarAccess(var) => Ok(scope
+            .get(var)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{var:?} not found, available vars are {:?}",
+                    scope.vars.keys().collect::<Vec<_>>()
+                )
+            })
+            .clone()),
         hir::TermInner::Application(func, exprs) => {
             let mut func = eval_term(scope, *func)?;
             let (mut func_scope, mut func) = loop {
