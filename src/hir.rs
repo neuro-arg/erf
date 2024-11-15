@@ -696,28 +696,44 @@ fn compile_patterns(
         }
     }
     let mut seq = vec![];
-    let ret_fall = ctx.ck.add_var(Some("ret fallback".to_owned()), level);
-    let (ret_fall_pos, ret_fall_neg) = ret_fall.polarize(&mut ctx.ck, arbitrary_bad_span);
-    let mut cond_term = Term {
-        inner: TermInner::Fallthrough,
-        ty: ret_fall_pos,
+    let mut ret_fall_cache = None;
+    let ret_fall_cache1 = &mut ret_fall_cache;
+    let mut ret_fall = move |ctx: &mut Ctx| {
+        if let Some(ret) = *ret_fall_cache1 {
+            ret
+        } else {
+            let var = ctx.ck.add_var(
+                Some(if has_types { "ret fallback" } else { "ret" }.to_owned()),
+                level,
+            );
+            let (pos, neg) = var.polarize(&mut ctx.ck, arbitrary_bad_span);
+            let ret = (var, pos, neg);
+            *ret_fall_cache1 = Some(ret);
+            ret
+        }
     };
+    let mut cond_term = None;
     for (cond, term) in conds.into_iter().rev() {
+        let (_, ret_fall_pos, ret_fall_neg) = ret_fall(ctx);
         ctx.ck.flow(term.ty, ret_fall_neg)?;
-        cond_term = Term {
-            inner: TermInner::If(Box::new(cond), Box::new(term), Box::new(cond_term)),
+        let cond_term1 = cond_term.unwrap_or_else(|| Term {
+            inner: TermInner::Fallthrough,
+            ty: ret_fall(ctx).1,
+        });
+        cond_term = Some(Term {
+            inner: TermInner::If(Box::new(cond), Box::new(term), Box::new(cond_term1)),
             ty: ret_fall_pos,
-        };
+        });
     }
-    if !matches!(cond_term.inner, TermInner::Fallthrough) {
-        seq.push(cond_term);
-    }
+    seq.extend(cond_term);
     for term in &fallthrough {
+        let (_, _, ret_fall_neg) = ret_fall(ctx);
         ctx.ck.flow(term.ty, ret_fall_neg)?;
     }
     seq.extend(fallthrough);
     let fallible = potentially_fallible && !definitely_infallible;
     let term = (!seq.is_empty()).then(|| {
+        let (_, ret_fall_pos, _) = ret_fall(ctx);
         let term = Term {
             inner: TermInner::Sequence(seq),
             ty: ret_fall_pos,
@@ -760,6 +776,7 @@ fn compile_patterns(
             cases: neg,
             fallthrough: term.as_ref().map(|_| {
                 let fall = var_fall(ctx);
+                let (_, ret_fall_pos, _) = ret_fall(ctx);
                 (
                     ctx.ck.add_ty(Neg::Var(fall), arbitrary_bad_span),
                     Some((ret_fall_pos, ret_neg)),
