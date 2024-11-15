@@ -40,7 +40,9 @@ impl<T> Hash for Id<T> {
 }
 impl<T> Debug for Id<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Id").field(&self.0).finish()
+        f.write_str("Id(")?;
+        self.0.fmt(f)?;
+        f.write_str(")")
     }
 }
 
@@ -95,10 +97,7 @@ impl<T> Hash for IdSpan<T> {
 }
 impl<T> Debug for IdSpan<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("IdSpan")
-            .field(&self.0)
-            .field(&self.1)
-            .finish()
+        self.0.fmt(f)
     }
 }
 

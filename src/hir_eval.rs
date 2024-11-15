@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use indexmap::IndexMap;
 
 use crate::{
@@ -10,7 +8,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Lambda(Scope, BTreeMap<usize, (Vec<VarId>, Term)>),
+    Lambda(Scope, Option<VarId>, Term),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -113,7 +111,8 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             eval_term(scope, *expr)
         }),
         hir::TermInner::Value(val) => Ok(match val {
-            hir::Value::Lambda(x) => Value::Lambda(scope.clone(), x),
+            hir::Value::Lambda(x, y, _) => Value::Lambda(scope.clone(), Some(x), *y),
+            hir::Value::FuncEntry(y) => Value::Lambda(scope.clone(), None, *y),
             hir::Value::Int(x) => Value::Int(x),
             hir::Value::Bool(x) => Value::Bool(x),
             hir::Value::Float(x) => Value::Float(x),
@@ -128,24 +127,27 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
                 )
             })
             .clone()),
-        hir::TermInner::Application(func, exprs) => {
+        hir::TermInner::Application(func, expr) => {
             let mut func = eval_term(scope, *func)?;
-            let (mut func_scope, mut func) = loop {
+            let (mut func_scope, arg, body) = loop {
                 match func {
                     Value::Tagged(_, x) => func = *x,
-                    Value::Lambda(func_scope, func) => break (func_scope, func),
+                    Value::Lambda(func_scope, arg, body) if arg.is_some() == expr.is_some() => {
+                        break (func_scope, arg, body)
+                    }
+                    Value::Lambda(mut func_scope, arg, body) => {
+                        assert!(arg.is_none());
+                        func = func_scope.scope(|scope, _handle| eval_term(scope, body))?;
+                    }
                     _ => {
                         unreachable!("unexpected application to {func:?}, why did this typecheck?");
                     }
                 }
             };
-            let exprs = exprs.into_iter().map(|expr| eval_term(scope, expr));
-            let (args, body) = func
-                .remove(&exprs.len())
-                .expect("invalid argc????? why did this typecheck?");
+            let expr = expr.map(|expr| eval_term(scope, *expr)).transpose()?;
             func_scope.scope(|scope, handle| {
-                for (arg, expr) in args.into_iter().zip(exprs) {
-                    scope.insert(handle, arg, expr?);
+                if let Some(expr) = expr {
+                    scope.insert(handle, arg.unwrap(), expr);
                 }
                 eval_term(scope, body)
             })

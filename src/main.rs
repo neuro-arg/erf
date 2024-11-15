@@ -19,11 +19,17 @@ mod grammar;
 mod typeck;
 mod util;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Span {
     file: u8,
     left: usize,
     right: usize,
+}
+
+impl std::fmt::Debug for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Span")
+    }
 }
 
 impl Span {
@@ -101,24 +107,30 @@ impl ParseCtx {
         content: impl Construct<Ident>,
         span: impl Construct<Span>,
     ) -> ast::Pattern {
-        ast::Pattern::new(
-            ast::PatternInner::Variable(content.construct(self)),
+        ast::Pattern::new1(
+            ast::BasicPatternInner::Variable(content.construct(self)),
             span.construct(self),
         )
     }
-    pub fn pattern_tagged(
+    pub fn pattern_or(
         &mut self,
-        tags: impl Construct<Vec<(QualifiedIdent, Span)>>,
-        pat: impl Construct<ast::Pattern>,
-        _span: impl Construct<Span>,
+        pats: impl Construct<Vec<ast::Pattern>>,
+        span: impl Construct<Span>,
     ) -> ast::Pattern {
-        let tags = tags.construct(self);
-        let pat = pat.construct(self);
-        tags.into_iter().rev().fold(pat, |pat, (tag, span)| {
-            let mut span1 = pat.span;
-            span1.left = span.left;
-            ast::Pattern::new(ast::PatternInner::tag(tag, span, pat), span1)
-        })
+        ast::Pattern::new(
+            ast::PatternInner::Or(pats.construct(self)),
+            span.construct(self),
+        )
+    }
+    pub fn pattern_and(
+        &mut self,
+        pats: impl Construct<Vec<ast::Pattern>>,
+        span: impl Construct<Span>,
+    ) -> ast::Pattern {
+        ast::Pattern::new(
+            ast::PatternInner::And(pats.construct(self)),
+            span.construct(self),
+        )
     }
     pub fn unary(
         &mut self,
@@ -266,19 +278,24 @@ fn main() {
     let ast = ast1;
     let mut ctx = hir::Ctx::default();
     println!("ast -> hir");
+    let write_graph = |ctx: &hir::Ctx| {
+        // println!("{:?}", scope.map.keys());
+        let graph = ctx.ck.graphviz(&text);
+        std::fs::write("types.dot", graph).unwrap();
+        std::process::Command::new("dot")
+            .args(["types.dot", "-Tpng", "-o", "types.png"])
+            .spawn()
+    };
     let (mut bindings, scope) = match ctx.lower_ast(ast) {
         Ok(x) => x,
         Err(err) => {
             show_err(&input_file, &text, err);
+            let handle = write_graph(&ctx);
+            let _ = handle.ok().and_then(|mut handle| handle.wait().ok());
             std::process::exit(1);
         }
     };
-    // println!("{:?}", scope.map.keys());
-    let graph = ctx.ck.graphviz(&text);
-    std::fs::write("types.dot", graph).unwrap();
-    let handle = std::process::Command::new("dot")
-        .args(["types.dot", "-Tpng", "-o", "types.png"])
-        .spawn();
+    let handle = write_graph(&ctx);
     let (main_term, _meta) = match bindings
         .get(&["main"], Span::default(), &mut ctx.ck, 0)
         .transpose()
@@ -297,6 +314,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // println!("{scope:#?}");
     println!("hir -> value");
     let ty = main_term.ty;
     println!(
@@ -304,7 +322,7 @@ fn main() {
         hir_eval::eval_term(
             &mut scope.try_into().unwrap(),
             hir::Term {
-                inner: hir::TermInner::Application(Box::new(main_term), vec![]),
+                inner: hir::TermInner::Application(Box::new(main_term), None),
                 ty: {
                     let mut vis = BTreeSet::new();
                     vis.insert(ty.id());
@@ -314,9 +332,7 @@ fn main() {
                         std::mem::swap(&mut tys, &mut tys1);
                         for ty in tys1 {
                             match ctx.ck.ty(ty) {
-                                Pos::Prim(typeck::PosPrim::Func(x)) => {
-                                    break 'a x.get(&0).unwrap().1
-                                }
+                                Pos::Prim(typeck::PosPrim::Func(0, x)) => break 'a *x,
                                 Pos::Var(v) => {
                                     for x in ctx.ck.var::<typeck::PosPrim>(*v) {
                                         if vis.insert(x) {

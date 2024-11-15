@@ -43,7 +43,7 @@ pub enum HumanType {
     },
     Tagged(String, Box<HumanType>),
     Record(BTreeMap<String, HumanType>),
-    Func(Vec<HumanType>, Box<HumanType>),
+    Func(Box<HumanType>, Box<HumanType>),
     Recursive(TypeVar, Box<HumanType>),
     Var(TypeVar),
     Union(Vec<HumanType>),
@@ -89,17 +89,9 @@ impl fmt::Display for HumanType {
             Self::Float { bits: None } => f.write_str("float"),
             Self::Float { bits: Some(bits) } => write!(f, "f{bits}"),
             Self::Func(a, b) => {
-                f.write_str("fn(")?;
-                let mut first = true;
-                for x in a {
-                    if first {
-                        first = false;
-                    } else {
-                        f.write_str(", ")?;
-                    }
-                    x.fmt(f)?;
-                }
-                f.write_str(") -> ")?;
+                f.write_str("")?;
+                a.fmt(f)?;
+                f.write_str(" -> ")?;
                 b.fmt(f)
             }
             Self::Record(fields) => {
@@ -370,16 +362,11 @@ impl HumanType {
                     Self::Var(i)
                 }
             }
-            Pos::Prim(PosPrim::Func(cases)) => cases
-                .values()
-                .map(|(a, b)| {
-                    Self::Func(
-                        a.iter().map(|a| Self::from_neg2(ck, a.id(), rec)).collect(),
-                        Box::new(Self::from_pos2(ck, b.id(), rec)),
-                    )
-                })
-                .fold(Self::Bot, Self::union2),
-
+            Pos::Prim(PosPrim::Lambda(a, b)) => Self::Func(
+                Box::new(Self::from_neg2(ck, a.id(), rec)),
+                Box::new(Self::from_pos2(ck, b.id(), rec)),
+            ),
+            Pos::Prim(PosPrim::Func(_, x)) => Self::from_pos2(ck, x.id(), rec),
             Pos::Prim(PosPrim::Label(a, b)) => Self::Tagged(
                 ck.label(*a).to_owned(),
                 Box::new(Self::from_pos2(ck, b.id(), rec)),
@@ -434,10 +421,11 @@ impl HumanType {
                     Self::Var(i)
                 }
             }
-            Neg::Prim(NegPrim::Func(a, b)) => Self::Func(
-                a.iter().map(|a| Self::from_pos2(ck, a.id(), rec)).collect(),
+            Neg::Prim(NegPrim::Lambda(a, b)) => Self::Func(
+                Box::new(Self::from_pos2(ck, a.id(), rec)),
                 Box::new(Self::from_neg2(ck, b.id(), rec)),
             ),
+            Neg::Prim(NegPrim::Func(_, x)) => Self::from_neg2(ck, x.id(), rec),
             Neg::Prim(NegPrim::Label { cases, fallthrough }) => {
                 let mut val = Self::Bot;
                 for (label, (ty, _refutable, _flow)) in cases {
@@ -485,9 +473,7 @@ impl HumanType {
             | Self::Float { .. } => {}
             Self::Record(x) => x.values().for_each(|x| x.collect_vars(out, pos)),
             Self::Func(a, b) => {
-                for x in a {
-                    x.collect_vars(out, !pos);
-                }
+                a.collect_vars(out, !pos);
                 b.collect_vars(out, pos);
             }
             Self::Recursive(a, b) => {
@@ -551,7 +537,7 @@ impl HumanType {
                 }
             }
             Self::Func(a, b) => Self::Func(
-                a.into_iter().map(|x| x.simplify2(vars, !pos)).collect(),
+                Box::new(a.simplify2(vars, !pos)),
                 Box::new(b.simplify2(vars, pos)),
             ),
             Self::Recursive(a, b) => {

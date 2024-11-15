@@ -1,4 +1,4 @@
-use super::{Wrapper, ast::{self, Ident, QualifiedIdent, Expr, LetArm, Pattern}};
+use super::{ast::{self, Ident, QualifiedIdent, Expr, LetArm, Pattern}};
 
 grammar(ctx: &mut crate::ParseCtx);
 
@@ -6,7 +6,7 @@ Comment = r"#.*";
 
 Comma<T>: Vec<T> = {
     <mut v:(<T> "," Comment*)*> <e:T?> => {
-    	v.extend(e);
+        v.extend(e);
         v
     }
 };
@@ -39,8 +39,8 @@ Ident: Ident = {
 };
 QualifiedIdent: QualifiedIdent = {
     <mut n:(<Ident>"::")*> <x:Ident> => {
-    	n.push(x);
-	QualifiedIdent(n)
+        n.push(x);
+        QualifiedIdent(n)
     },
 };
 IntLiteral: String = {
@@ -218,11 +218,27 @@ BasicPattern: Pattern = {
 IdentCommentSpan: (QualifiedIdent, (usize, usize)) = {
     <l: @L> <mut y:(<Ident> "::")*> <x:Ident> <r: @R> Comment* => {
         y.push(x);
-	(QualifiedIdent(y), (l, r))
+        (QualifiedIdent(y), (l, r))
     }
 };
+AndPattern: Pattern = {
+    <l: @L> <xs:BasicPattern+> <r: @R> => {
+        if xs.len() == 1 {
+            xs.into_iter().next().unwrap()
+        } else {
+            ctx.pattern_and(xs, (l, r))
+        }
+    },
+};
 Pattern: Pattern = {
-    <l: @L> <t:IdentCommentSpan*> <x:BasicPattern> <r: @R> => ctx.pattern_tagged(Wrapper(t), x, (l, r)),
+    <l: @L> <mut xs:(<AndPattern> "|" Comment*)*> <x:AndPattern> <r: @R> => {
+        if xs.is_empty() {
+            x
+        } else {
+            xs.push(x);
+            ctx.pattern_or(xs, (l, r))
+        }
+    },
 };
 
 TopLevelDecl: ast::Tld = {

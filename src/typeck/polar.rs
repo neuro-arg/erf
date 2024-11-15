@@ -61,11 +61,12 @@ impl PolarPrimitive for PosPrim {
                 IterEither::A(IterEither::A([id].into_iter().map(AnyIdRef::Same)))
             }
             Self::Record(x) => IterEither::A(IterEither::B(x.values().map(AnyIdRef::Same))),
-            Self::Func(cases) => IterEither::B(IterEither::A(cases.values().flat_map(|x| {
-                x.0.iter()
-                    .map(AnyIdRef::Inverse)
-                    .chain([AnyIdRef::Same(&x.1)])
-            }))),
+            Self::Lambda(a, b) => IterEither::B(IterEither::A(IterEither::A(
+                [AnyIdRef::Inverse(a), AnyIdRef::Same(b)].into_iter(),
+            ))),
+            Self::Func(_, x) => IterEither::B(IterEither::A(IterEither::B(
+                [AnyIdRef::Same(x)].into_iter(),
+            ))),
             Self::Void
             | Self::Bool
             | Self::Int { .. }
@@ -80,11 +81,12 @@ impl PolarPrimitive for PosPrim {
                 IterEither::A(IterEither::A([id].into_iter().map(AnyIdMut::Same)))
             }
             Self::Record(x) => IterEither::A(IterEither::B(x.values_mut().map(AnyIdMut::Same))),
-            Self::Func(cases) => IterEither::B(IterEither::A(cases.values_mut().flat_map(|x| {
-                x.0.iter_mut()
-                    .map(AnyIdMut::Inverse)
-                    .chain([AnyIdMut::Same(&mut x.1)])
-            }))),
+            Self::Lambda(a, b) => IterEither::B(IterEither::A(IterEither::A(
+                [AnyIdMut::Inverse(a), AnyIdMut::Same(b)].into_iter(),
+            ))),
+            Self::Func(_, x) => IterEither::B(IterEither::A(IterEither::B(
+                [AnyIdMut::Same(x)].into_iter(),
+            ))),
             Self::Void
             | Self::Bool
             | Self::Int { .. }
@@ -128,10 +130,12 @@ impl PolarPrimitive for NegPrim {
                         )
                     }),
             )),
-            Self::Func(a, b) => IterEither::A(IterEither::B(
-                a.iter().map(AnyIdRef::Inverse).chain([AnyIdRef::Same(b)]),
+            Self::Lambda(a, b) => IterEither::A(IterEither::B(
+                [AnyIdRef::Inverse(a), AnyIdRef::Same(b)].into_iter(),
             )),
-            Self::Record(_, x) => IterEither::B(IterEither::A(Some(AnyIdRef::Same(x)).into_iter())),
+            Self::Record(_, x) | Self::Func(_, x) => {
+                IterEither::B(IterEither::A([AnyIdRef::Same(x)].into_iter()))
+            }
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => {
                 IterEither::B(IterEither::B([].into_iter()))
             }
@@ -152,12 +156,12 @@ impl PolarPrimitive for NegPrim {
                             }))
                     }),
             )),
-            Self::Func(a, b) => IterEither::A(IterEither::B(
-                a.iter_mut()
-                    .map(AnyIdMut::Inverse)
-                    .chain([AnyIdMut::Same(b)]),
+            Self::Lambda(a, b) => IterEither::A(IterEither::B(
+                [AnyIdMut::Inverse(a), AnyIdMut::Same(b)].into_iter(),
             )),
-            Self::Record(_, x) => IterEither::B(IterEither::A(Some(AnyIdMut::Same(x)).into_iter())),
+            Self::Record(_, x) | Self::Func(_, x) => {
+                IterEither::B(IterEither::A(Some(AnyIdMut::Same(x)).into_iter()))
+            }
             Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => {
                 IterEither::B(IterEither::B([].into_iter()))
             }

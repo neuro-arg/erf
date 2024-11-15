@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, fmt::Display};
+use std::{
+    collections::{BTreeMap, HashMap, LinkedList},
+    fmt::Display,
+};
 
-use crate::Span;
+use itertools::Itertools;
+
+use crate::{util::IterEither, Span};
 
 pub type Ident = String;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -33,7 +38,7 @@ impl Display for QualifiedIdent {
             } else {
                 f.write_str("::")?;
             }
-            f.write_str(&x)?;
+            f.write_str(x)?;
         }
         Ok(())
     }
@@ -187,18 +192,21 @@ impl Expr {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PatternInner {
-    Tag(QualifiedIdent, Span, Box<Pattern>),
+pub enum BasicPatternInner {
     Variable(Ident),
 }
 
-impl PatternInner {
-    pub fn var(s: impl Into<String>) -> Self {
-        Self::Variable(s.into())
-    }
-    pub fn tag(s: QualifiedIdent, span: Span, pat: Pattern) -> Self {
-        Self::Tag(s, span, Box::new(pat))
-    }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BasicPattern {
+    pub inner: BasicPatternInner,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PatternInner {
+    Basic(BasicPatternInner),
+    Or(Vec<Pattern>),
+    And(Vec<Pattern>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -207,30 +215,126 @@ pub struct Pattern {
     pub span: Span,
 }
 
+#[derive(PartialEq, Eq)]
+pub struct PatConj(pub LinkedList<BasicPattern>);
+impl PatConj {
+    fn first_pat(&self) -> Option<&BasicPattern> {
+        self.0.front()
+    }
+    pub fn pop_first_pat(&mut self) -> Option<BasicPattern> {
+        self.0.pop_front()
+    }
+}
+impl std::fmt::Debug for PatConj {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(")?;
+        let mut first = true;
+        for x in &self.0 {
+            if first {
+                first = false;
+            } else {
+                f.write_str(" & ")?;
+            }
+            x.fmt(f)?;
+        }
+        f.write_str(")")
+    }
+}
+#[derive(PartialEq, Eq)]
+pub struct PatDnf(pub Vec<PatConj>);
+impl std::fmt::Debug for PatDnf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(")?;
+        let mut first = true;
+        for x in &self.0 {
+            if first {
+                first = false;
+            } else {
+                f.write_str(" | ")?;
+            }
+            x.fmt(f)?;
+        }
+        f.write_str(")")
+    }
+}
+
 impl Pattern {
     pub fn new(inner: PatternInner, span: Span) -> Self {
         Self { inner, span }
     }
+    pub fn new1(inner: BasicPatternInner, span: Span) -> Self {
+        Self::new(PatternInner::Basic(inner), span)
+    }
+    /// Convert into disjunction of conjunctions
+    pub fn into_dnf(self) -> PatDnf {
+        PatDnf(match self.inner {
+            // for and, convert each item into dnf and make a cartesian product
+            // [a | b] & [c | d] -> [a & c] | [a & d] | [b & c] | [b & d]
+            PatternInner::And(x) => x
+                .into_iter()
+                .map(|x| {
+                    x.into_dnf()
+                        .0
+                        .into_iter()
+                        .map(|x| x.0)
+                        .collect::<Vec<LinkedList<BasicPattern>>>()
+                })
+                .multi_cartesian_product()
+                .map(|x| {
+                    PatConj(x.into_iter().fold(LinkedList::new(), |mut old, mut new| {
+                        old.append(&mut new);
+                        old
+                    }))
+                })
+                .collect(),
+            // for or, concatenate all arms
+            PatternInner::Or(pats) => pats.into_iter().flat_map(|x| x.into_dnf().0).collect(),
+            // for basic pattern, just take it as-is
+            PatternInner::Basic(inner) => vec![PatConj(
+                [BasicPattern {
+                    inner,
+                    span: self.span,
+                }]
+                .into(),
+            )],
+        })
+    }
 }
 
 impl PatternInner {
-    pub fn label(&self) -> Option<String> {
+    fn labels(&self) -> impl Iterator<Item = &str> {
         match self {
-            PatternInner::Variable(x) => Some(x.clone()),
-            PatternInner::Tag(_tag, _span, x) => x.label(),
+            PatternInner::Basic(x) => match x {
+                BasicPatternInner::Variable(x) => IterEither::A([x.as_str()].into_iter()),
+            },
+            PatternInner::Or(x) | PatternInner::And(x) => IterEither::B(
+                // box it to avoid recursive types which cant be inferred in rust
+                x.iter().flat_map(|x| {
+                    let labels: Box<dyn Iterator<Item = &str>> = Box::new(x.inner.labels());
+                    labels
+                }),
+            ),
         }
+    }
+    pub fn label(&self) -> Option<String> {
+        let mut names = HashMap::<_, usize>::new();
+        let mut ret = None;
+        let mut max_c = 0;
+        for name in self.labels() {
+            let w = names.entry(name).or_default();
+            *w += 1;
+            if *w > max_c {
+                max_c = *w;
+                ret = Some(name);
+            }
+        }
+        ret.map(|x| x.to_owned())
     }
 }
 
 impl Pattern {
     pub fn label(&self) -> Option<String> {
         self.inner.label()
-    }
-    pub fn iter_var_names(&self) -> impl Iterator<Item = &str> {
-        match &self.inner {
-            PatternInner::Tag(_, _, x) => x.iter_var_names(),
-            PatternInner::Variable(x) => [x.as_str()].into_iter(),
-        }
     }
 }
 
@@ -271,3 +375,55 @@ impl LetPattern {
 }
 
 pub type Program = BTreeMap<Ident, Vec<LetArm>>;
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        ast::{PatConj, PatDnf},
+        Span,
+    };
+
+    use super::{BasicPattern, BasicPatternInner, Pattern, PatternInner};
+
+    fn or(pats: impl IntoIterator<Item = Pattern>) -> Pattern {
+        Pattern::new(
+            PatternInner::Or(pats.into_iter().collect()),
+            Span::default(),
+        )
+    }
+    fn and(pats: impl IntoIterator<Item = Pattern>) -> Pattern {
+        Pattern::new(
+            PatternInner::And(pats.into_iter().collect()),
+            Span::default(),
+        )
+    }
+    fn var(name: impl AsRef<str>) -> Pattern {
+        Pattern::new1(
+            BasicPatternInner::Variable(name.as_ref().to_owned()),
+            Span::default(),
+        )
+    }
+    fn bvar(name: impl AsRef<str>) -> BasicPattern {
+        BasicPattern {
+            inner: BasicPatternInner::Variable(name.as_ref().to_owned()),
+            span: Span::default(),
+        }
+    }
+
+    #[test]
+    fn test() {
+        let pat = or([
+            and([var("test"), var("test1")]),
+            and([var("test2"), or([var("test3"), var("test4")])]),
+        ]);
+        let dnf = pat.into_dnf();
+        assert_eq!(
+            dnf,
+            PatDnf(vec![
+                PatConj([bvar("test"), bvar("test1")].into()),
+                PatConj([bvar("test2"), bvar("test3")].into()),
+                PatConj([bvar("test2"), bvar("test4")].into()),
+            ])
+        );
+    }
+}

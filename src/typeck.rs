@@ -21,8 +21,16 @@ pub struct RelevelId(usize);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LabelId(NonZeroUsize);
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VarId(usize);
+
+impl std::fmt::Debug for VarId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VarId(")?;
+        self.0.fmt(f)?;
+        f.write_str(")")
+    }
+}
 
 impl VarId {
     pub fn polarize(&self, ck: &mut TypeCk, span: Span) -> (PosIdS, NegIdS) {
@@ -49,8 +57,9 @@ pub enum PosPrim {
     FloatLiteral,
     Record(BTreeMap<String, IdSpan<Self>>),
     Label(LabelId, IdSpan<Self>),
-    /// Map from argc to arg types
-    Func(BTreeMap<usize, (Vec<IdSpan<NegPrim>>, IdSpan<Self>)>),
+    Lambda(IdSpan<NegPrim>, IdSpan<Self>),
+    /// Lambda annotated with arity
+    Func(usize, IdSpan<Self>),
 }
 
 pub type Flow = Option<(PosIdS, NegIdS)>;
@@ -71,7 +80,9 @@ pub enum NegPrim {
         cases: BTreeMap<LabelId, (IdSpan<Self>, bool, Flow)>,
         fallthrough: Option<(IdSpan<Self>, Flow)>,
     },
-    Func(Vec<IdSpan<PosPrim>>, IdSpan<Self>),
+    Lambda(IdSpan<PosPrim>, IdSpan<Self>),
+    /// Lambda call annotated with arity
+    Func(usize, IdSpan<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -266,14 +277,18 @@ impl TypeCk {
                         }));
                     }
                 }
-                (Pos::Prim(PosPrim::Func(cases)), Neg::Prim(NegPrim::Func(neg_a, neg_b))) => {
-                    if let Some((pos_a, pos_b)) = cases.get(&neg_a.len()) {
-                        // ensure function of type pos_a -> pos_b can consume values of type neg_a
-                        for (neg, pos) in neg_a.iter().zip(pos_a.iter()) {
-                            self.q.enqueue(*neg, *pos);
-                        }
-                        // ensure function of type pos_a -> pos_b produces values of type neg_b
-                        self.q.enqueue(*pos_b, *neg_b);
+                (
+                    Pos::Prim(PosPrim::Lambda(pos_a, pos_b)),
+                    Neg::Prim(NegPrim::Lambda(neg_a, neg_b)),
+                ) => {
+                    // ensure function of type pos_a -> pos_b can consume values of type neg_a
+                    self.q.enqueue(*neg_a, *pos_a);
+                    // ensure function of type pos_a -> pos_b produces values of type neg_b
+                    self.q.enqueue(*pos_b, *neg_b);
+                }
+                (Pos::Prim(PosPrim::Func(argc0, pos1)), Neg::Prim(NegPrim::Func(argc1, neg1))) => {
+                    if *argc0 == *argc1 {
+                        self.q.enqueue(*pos1, *neg1);
                     } else {
                         // arity mismatch
                         return Err(diag::TypeError::new(
@@ -281,22 +296,9 @@ impl TypeCk {
                             HumanType::from_neg(self, neg.id()),
                         )
                         .with_hint(diag::TypeHint::ArityMismatch {
-                            count: neg_a.len(),
-                            declared: cases
-                                .iter()
-                                .map(|(count, x)| {
-                                    let first_span = x.0.first().unwrap().span();
-                                    let last_span = x.0.last().unwrap().span();
-                                    (
-                                        *count,
-                                        Span {
-                                            right: last_span.right,
-                                            ..first_span
-                                        },
-                                    )
-                                })
-                                .collect(),
-                            used: neg.span(),
+                            count: *argc1,
+                            declared: vec![(*argc0, pos1.span())],
+                            used: neg1.span(),
                         }));
                     }
                 }
@@ -304,7 +306,7 @@ impl TypeCk {
                     Pos::Prim(PosPrim::Label(label1, _)),
                     Neg::Prim(NegPrim::Label { cases, fallthrough }),
                 ) => {
-                    let cases = if let Some((ty2, refutable, flow)) = cases.get(label1) {
+                    let cases1 = if let Some((ty2, refutable, flow)) = cases.get(label1) {
                         Some((*ty2, *flow))
                             .into_iter()
                             .chain(refutable.then(|| *fallthrough).flatten())
@@ -312,7 +314,7 @@ impl TypeCk {
                         None.into_iter().chain(*fallthrough)
                     };
                     let mut handled = false;
-                    for (case, flow) in cases {
+                    for (case, flow) in cases1 {
                         self.q.enqueue(pos, case);
                         if let Some((flow_pos, flow_neg)) = flow {
                             self.q.enqueue(flow_pos, flow_neg);
@@ -381,8 +383,8 @@ impl TypeCk {
                         self.q.enqueue(*flow_pos, *flow_neg);
                     }
                 }
-                (_pos1, _neg1) => {
-                    // println!("{pos1:?} {neg1:?}");
+                (pos1, neg1) => {
+                    println!("{pos1:?} {neg1:?}");
                     return Err(diag::TypeError::new(
                         HumanType::from_pos(self, pos.id()),
                         HumanType::from_neg(self, neg.id()),
