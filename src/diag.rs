@@ -32,7 +32,6 @@ impl fmt::Display for TypeVar {
 pub enum HumanType {
     Top,
     Bot,
-    Void,
     Bool,
     Int {
         signed: Option<bool>,
@@ -55,7 +54,6 @@ impl fmt::Display for HumanType {
         match self {
             Self::Top => f.write_str("any"),
             Self::Bot => f.write_str("any"),
-            Self::Void => f.write_str("()"),
             Self::Bool => f.write_str("bool"),
             Self::Tagged(a, b) => {
                 f.write_str(a)?;
@@ -328,7 +326,6 @@ impl HumanType {
         }
         rec.0.insert(pos.into(), None);
         let ret = match ck.ty(pos) {
-            Pos::Prim(PosPrim::Void) => Self::Void,
             Pos::Prim(PosPrim::Bool) => Self::Bool,
             Pos::Prim(PosPrim::Int { signed, bits }) => Self::Int {
                 signed: Some(*signed),
@@ -392,7 +389,6 @@ impl HumanType {
         }
         rec.0.insert(neg.into(), None);
         let ret = match ck.ty(neg) {
-            Neg::Prim(NegPrim::Void) => Self::Void,
             Neg::Prim(NegPrim::Bool) => Self::Bool,
             Neg::Prim(NegPrim::Int { signed, bits }) => Self::Int {
                 signed: Some(*signed),
@@ -467,7 +463,6 @@ impl HumanType {
             }
             Self::Top
             | Self::Bot
-            | Self::Void
             | Self::Bool
             | Self::Int { .. }
             | Self::Float { .. } => {}
@@ -553,7 +548,6 @@ impl HumanType {
             x @ (Self::Top
             | Self::Bot
             | Self::Bool
-            | Self::Void
             | Self::Int { .. }
             | Self::Float { .. }
             | Self::Var(_)) => x,

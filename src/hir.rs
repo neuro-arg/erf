@@ -95,10 +95,86 @@ impl Bindings {
     pub fn contains(&self, s: &str) -> bool {
         self.ck_map.get(s).is_some_and(|x| !x.is_empty())
     }
-    pub fn contains_type(&self, s: &str) -> bool {
-        self.ck_map
-            .get(s)
-            .is_some_and(|x| matches!(x.last(), Some((VarType::Type(..), _))))
+    fn prim_neg_pos(&self, ty: &str, ck: &mut TypeCk) -> Option<(NegIdS, PosIdS)> {
+        Some(match ty {
+            "f32" => (
+                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 32 }), Span::default()),
+                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 32 }), Span::default()),
+            ),
+            "f64" => (
+                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 64 }), Span::default()),
+                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 64 }), Span::default()),
+            ),
+            "i8" | "u8" => (
+                ck.add_ty(
+                    Neg::Prim(NegPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 8,
+                    }),
+                    Span::default(),
+                ),
+                ck.add_ty(
+                    Pos::Prim(PosPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 8,
+                    }),
+                    Span::default(),
+                ),
+            ),
+            "i16" | "u16" => (
+                ck.add_ty(
+                    Neg::Prim(NegPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 16,
+                    }),
+                    Span::default(),
+                ),
+                ck.add_ty(
+                    Pos::Prim(PosPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 16,
+                    }),
+                    Span::default(),
+                ),
+            ),
+            "i32" | "u32" => (
+                ck.add_ty(
+                    Neg::Prim(NegPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 32,
+                    }),
+                    Span::default(),
+                ),
+                ck.add_ty(
+                    Pos::Prim(PosPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 32,
+                    }),
+                    Span::default(),
+                ),
+            ),
+            "i64" | "u64" => (
+                ck.add_ty(
+                    Neg::Prim(NegPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 64,
+                    }),
+                    Span::default(),
+                ),
+                ck.add_ty(
+                    Pos::Prim(PosPrim::Int {
+                        signed: ty.starts_with('i'),
+                        bits: 64,
+                    }),
+                    Span::default(),
+                ),
+            ),
+            "bool" => (
+                ck.add_ty(Neg::Prim(NegPrim::Bool), Span::default()),
+                ck.add_ty(Pos::Prim(PosPrim::Bool), Span::default()),
+            ),
+            _ => return None,
+        })
     }
     fn get_intrinsic(
         &mut self,
@@ -114,25 +190,30 @@ impl Bindings {
             | "u16" | "u32" | "u64" | "bool" => {
                 let id = ck.add_label(name.to_owned());
                 // spans are kinda wacky but whatever
-                let arg = ck.add_var(None, level);
+                let arg = ck.add_var(Some(format!("{name} arg")), level);
                 let (arg_pos, arg_neg) = arg.polarize(ck, Span::default());
-                let ret_pos = ck.add_ty(Pos::Prim(PosPrim::Label(id, arg_pos)), Span::default());
-                let term = Term {
-                    inner: TermInner::AttachTag(
-                        id,
-                        Box::new(Term {
-                            inner: TermInner::VarAccess(arg),
-                            ty: arg_pos,
-                        }),
-                    ),
-                    ty: ret_pos,
-                };
-                let term = Term {
-                    inner: TermInner::Value(Value::Lambda(arg, Box::new(term))),
-                    ty: ck.add_ty(
-                        Pos::Prim(PosPrim::Lambda(arg_neg, ret_pos)),
-                        Span::default(),
-                    ),
+                let term = if let Some((neg, pos)) = self.prim_neg_pos(name, ck) {
+                    let ret_ty = ck.add_ty(Pos::Prim(PosPrim::Label(id, pos)), Span::default());
+                    Term {
+                        inner: TermInner::Value(Value::Intrinsic(name.to_owned())),
+                        ty: ck.add_ty(Pos::Prim(PosPrim::Lambda(neg, ret_ty)), Span::default()),
+                    }
+                } else {
+                    let ret_ty = ck.add_ty(Pos::Prim(PosPrim::Label(id, arg_pos)), Span::default());
+                    let term = Term {
+                        inner: TermInner::AttachTag(
+                            id,
+                            Box::new(Term {
+                                inner: TermInner::VarAccess(arg),
+                                ty: arg_pos,
+                            }),
+                        ),
+                        ty: ret_ty,
+                    };
+                    Term {
+                        inner: TermInner::Value(Value::Lambda(arg, Box::new(term))),
+                        ty: ck.add_ty(Pos::Prim(PosPrim::Lambda(arg_neg, ret_ty)), Span::default()),
+                    }
                 };
                 let term = Term {
                     ty: ck.add_ty(Pos::Prim(PosPrim::Func(1, term.ty)), Span::default()),
@@ -149,85 +230,7 @@ impl Bindings {
                             return None;
                         };
 
-                        let (neg, pos) = match ty {
-                            "f32" => (
-                                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 32 }), Span::default()),
-                                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 32 }), Span::default()),
-                            ),
-                            "f64" => (
-                                ck.add_ty(Neg::Prim(NegPrim::Float { bits: 64 }), Span::default()),
-                                ck.add_ty(Pos::Prim(PosPrim::Float { bits: 64 }), Span::default()),
-                            ),
-                            "i8" | "u8" => (
-                                ck.add_ty(
-                                    Neg::Prim(NegPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 8,
-                                    }),
-                                    Span::default(),
-                                ),
-                                ck.add_ty(
-                                    Pos::Prim(PosPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 8,
-                                    }),
-                                    Span::default(),
-                                ),
-                            ),
-                            "i16" | "u16" => (
-                                ck.add_ty(
-                                    Neg::Prim(NegPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 16,
-                                    }),
-                                    Span::default(),
-                                ),
-                                ck.add_ty(
-                                    Pos::Prim(PosPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 16,
-                                    }),
-                                    Span::default(),
-                                ),
-                            ),
-                            "i32" | "u32" => (
-                                ck.add_ty(
-                                    Neg::Prim(NegPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 32,
-                                    }),
-                                    Span::default(),
-                                ),
-                                ck.add_ty(
-                                    Pos::Prim(PosPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 32,
-                                    }),
-                                    Span::default(),
-                                ),
-                            ),
-                            "i64" | "u64" => (
-                                ck.add_ty(
-                                    Neg::Prim(NegPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 64,
-                                    }),
-                                    Span::default(),
-                                ),
-                                ck.add_ty(
-                                    Pos::Prim(PosPrim::Int {
-                                        signed: ty.starts_with('i'),
-                                        bits: 64,
-                                    }),
-                                    Span::default(),
-                                ),
-                            ),
-                            "bool" => (
-                                ck.add_ty(Neg::Prim(NegPrim::Bool), Span::default()),
-                                ck.add_ty(Pos::Prim(PosPrim::Bool), Span::default()),
-                            ),
-                            _ => return None,
-                        };
+                        let (neg, pos) = self.prim_neg_pos(ty, ck)?;
                         let neg = ck.add_ty(
                             Neg::Prim(NegPrim::Label {
                                 cases: {
@@ -266,6 +269,26 @@ impl Bindings {
         };
         self.intrinsics.insert(name.to_owned(), ret.clone());
         Some(ret)
+    }
+    pub fn contains_type<S: AsRef<str>>(&mut self, s: &[S], ck: &mut TypeCk, level: u16) -> bool {
+        let (module, s) = match &s {
+            [s] => (None, s),
+            [a, b] => (Some(a), b),
+            _ => return false,
+        };
+        match module.map(|x| x.as_ref()) {
+            Some("intrinsic") => {
+                return self
+                    .get_intrinsic(s.as_ref(), ck, level)
+                    .is_some_and(|x| matches!(x.1, TermMeta::Type(_)))
+            }
+            Some(_) => return false,
+            None => {}
+        }
+        let Some((var, _lvl)) = self.ck_map.get(s.as_ref()).and_then(|x| x.last()) else {
+            return false;
+        };
+        matches!(var, VarType::Type(..))
     }
     pub fn get<S: AsRef<str>>(
         &mut self,
@@ -347,21 +370,6 @@ impl Bindings {
     fn mark_cur(&mut self, var: VarId) {
         self.orders.last_mut().unwrap().1 = Some(var);
     }
-    /// Execute `func` in a new scope.
-    ///
-    /// `func` takes `Vec<(VarId, Term)>`, which contains the list of variables bound
-    /// by the pattern (if any)
-    fn new_scope<T>(
-        &mut self,
-        (vars, to_pop): (Vec<(VarId, Term)>, Vec<String>),
-        func: impl FnOnce(&mut Self, Vec<(VarId, Term)>) -> T,
-    ) -> T {
-        let ret = func(self, vars);
-        for name in to_pop {
-            self.remove_ck(&name);
-        }
-        ret
-    }
     fn new_scope_let<T>(
         &mut self,
         arms: Vec<(Ident, VarType)>,
@@ -434,13 +442,6 @@ fn toposort(
     ret
 }
 
-enum Decision {
-    Return(Term),
-    Conditional(Term, Vec<Decision>),
-    Match(VarId, LabelId, Vec<Decision>),
-    Bind(VarId, Term, Vec<Decision>),
-}
-
 /// A conjunction for each argument
 type ConjSeq = LinkedList<ast::PatConj>;
 
@@ -490,7 +491,11 @@ fn compile_patterns(
     let (var, label, is_top_level) = if let Some((var, label)) = var {
         (var, label, false)
     } else {
-        (ctx.ck.add_var(None, level), None, true)
+        (
+            ctx.ck.add_var(Some("subpattern".to_owned()), level),
+            None,
+            true,
+        )
     };
     // Group by first arg's first pattern
     let mut map = dnf
@@ -525,17 +530,32 @@ fn compile_patterns(
     let mut has_types = false;
     for (first_arg_pat, _elems) in &map {
         match first_arg_pat.as_ref().map(|x| &x.inner) {
-            Some(ast::BasicPatternInner::Variable(name)) if bindings.contains_type(name) => {
+            Some(ast::BasicPatternInner::Variable(name))
+                if bindings.contains_type(&name.0, &mut ctx.ck, level) =>
+            {
                 has_types = true;
                 break;
             }
             _ => {}
         }
     }
-    let (var, var_fall) = if has_types {
-        (var, var)
+    let (var, mut var_fall_cache) = if has_types {
+        // if we *do* use types, create a fallback var that contains all types that werent caught
+        // by the match
+        (var, None)
     } else {
-        (var, ctx.ck.add_var(None, level))
+        // if we *dont* use types, fallback var == var
+        (var, Some(var))
+    };
+    let var_fall_cache1 = &mut var_fall_cache;
+    let mut var_fall = move |ctx: &mut Ctx| {
+        if let Some(ret) = *var_fall_cache1 {
+            ret
+        } else {
+            let ret = ctx.ck.add_var(Some("fallback var".to_owned()), level);
+            *var_fall_cache1 = Some(ret);
+            ret
+        }
     };
     let mut arities = BTreeSet::new();
     let arity_add = if is_top_level { 1 } else { 0 };
@@ -545,23 +565,22 @@ fn compile_patterns(
             dnf: elems,
         };
         match first_arg_pat.as_ref().map(|x| &x.inner) {
-            Some(ast::BasicPatternInner::Variable(name)) if bindings.contains(name) => {
+            Some(ast::BasicPatternInner::Variable(name))
+                if name.0.len() != 1 || bindings.contains(&name.0[0]) =>
+            {
                 let span = first_arg_pat.as_ref().unwrap().span;
                 match bindings
-                    .get(&[name.as_str()], span, &mut ctx.ck, level)?
-                    .unwrap()
+                    .get(&name.0, span, &mut ctx.ck, level)?
+                    .ok_or_else(|| diag::NameNotFoundError::new(&name.0, span, false))?
                 {
                     (term, TermMeta::None) => {
-                        if name.starts_with(|x: char| x.is_uppercase()) {
-                            // TODO: warn that this is probably meant to be a type
-                            println!("this is meant to be a type right");
-                        }
                         let (eq_func, _) = bindings
                             .get(&["=="], span, &mut ctx.ck, level)?
                             .ok_or_else(|| diag::Error::Other("== not found".to_owned(), span))?;
+                        let var_fall = var_fall(ctx);
                         let var_pos = ctx.ck.add_ty(Pos::Var(var_fall), span);
 
-                        let eq_ret1 = ctx.ck.add_var(None, level);
+                        let eq_ret1 = ctx.ck.add_var(Some("== _".to_owned()), level);
                         let (eq_ret1_pos, eq_ret1_neg) = eq_ret1.polarize(&mut ctx.ck, span);
                         let eq_neg1 = Neg::Prim(NegPrim::Lambda(var_pos, eq_ret1_neg));
                         let eq_neg1 = ctx.ck.add_ty(eq_neg1, span);
@@ -569,7 +588,7 @@ fn compile_patterns(
                         let eq_neg1 = ctx.ck.add_ty(eq_neg1, span);
                         ctx.ck.flow(eq_func.ty, eq_neg1)?;
 
-                        let eq_ret2 = ctx.ck.add_var(None, level);
+                        let eq_ret2 = ctx.ck.add_var(Some("== _ _".to_owned()), level);
                         let (eq_ret2_pos, eq_ret2_neg) = eq_ret2.polarize(&mut ctx.ck, span);
                         let eq_neg2 = Neg::Prim(NegPrim::Lambda(term.ty, eq_ret2_neg));
                         let eq_neg2 = ctx.ck.add_ty(eq_neg2, span);
@@ -591,6 +610,8 @@ fn compile_patterns(
                             ),
                             ty: eq_ret2_pos,
                         };
+                        let bool_neg = ctx.ck.add_ty(Neg::Prim(NegPrim::Bool), span);
+                        ctx.ck.flow(cond.ty, bool_neg)?;
 
                         let (term, _fallible, arities1) =
                             compile_patterns(ctx, bindings, level, Some((var_fall, label)), dnf)?;
@@ -604,7 +625,9 @@ fn compile_patterns(
                         if label.is_some() {
                             todo!("proper error (cant have 2 labels in a conjunction)");
                         }
-                        let var_case = ctx.ck.add_var(None, level);
+                        let var_case = ctx
+                            .ck
+                            .add_var(Some(format!("case {name} ({arities:?})")), level);
                         let (term, fallible, arities1) = compile_patterns(
                             ctx,
                             bindings,
@@ -634,6 +657,13 @@ fn compile_patterns(
                 }
             }
             Some(ast::BasicPatternInner::Variable(name)) => {
+                assert_eq!(name.0.len(), 1);
+                let name = name.into_iter().next().unwrap();
+                if name.starts_with(|x: char| x.is_uppercase()) {
+                    // TODO: warn that this is probably meant to be a type
+                    println!("this is meant to be a type right");
+                }
+                let var_fall = var_fall(ctx);
                 bindings.insert_ck(name.clone(), VarType::Mono(var_fall), false);
                 let (term, fallible, arities1) =
                     compile_patterns(ctx, bindings, level, Some((var_fall, label)), dnf)?;
@@ -666,7 +696,7 @@ fn compile_patterns(
         }
     }
     let mut seq = vec![];
-    let ret_fall = ctx.ck.add_var(None, level);
+    let ret_fall = ctx.ck.add_var(Some("ret fallback".to_owned()), level);
     let (ret_fall_pos, ret_fall_neg) = ret_fall.polarize(&mut ctx.ck, arbitrary_bad_span);
     let mut cond_term = Term {
         inner: TermInner::Fallthrough,
@@ -692,13 +722,13 @@ fn compile_patterns(
             inner: TermInner::Sequence(seq),
             ty: ret_fall_pos,
         };
-        if var == var_fall {
+        if var == var_fall(ctx) {
             term
         } else {
             Term {
                 inner: TermInner::Bind {
                     bindings: Box::new([(
-                        var_fall,
+                        var_fall(ctx),
                         Term {
                             inner: TermInner::VarAccess(var),
                             ty: ctx.ck.add_ty(Pos::Var(var), arbitrary_bad_span),
@@ -711,7 +741,7 @@ fn compile_patterns(
         }
     });
     let term = if has_types {
-        let ret_ty = ctx.ck.add_var(None, level);
+        let ret_ty = ctx.ck.add_var(Some("ret".to_owned()), level);
         let ret_neg = ctx.ck.add_ty(Neg::Var(ret_ty), arbitrary_bad_span);
         let mut neg = BTreeMap::new();
         let mut branches = BTreeMap::new();
@@ -729,8 +759,9 @@ fn compile_patterns(
         let neg = Neg::Prim(NegPrim::Label {
             cases: neg,
             fallthrough: term.as_ref().map(|_| {
+                let fall = var_fall(ctx);
                 (
-                    ctx.ck.add_ty(Neg::Var(var_fall), arbitrary_bad_span),
+                    ctx.ck.add_ty(Neg::Var(fall), arbitrary_bad_span),
                     Some((ret_fall_pos, ret_neg)),
                 )
             }),
@@ -952,7 +983,7 @@ impl Ctx {
                 assert!(exprs.next().is_none());
                 // spans are kinda wacky but whatever
                 let id = bindings.get_type(&[ident.as_str()], expr.span, &mut self.ck, level)?;
-                let arg = self.ck.add_var(None, level);
+                let arg = self.ck.add_var(Some(format!("{ident} arg")), level);
                 let (arg_pos, arg_neg) = arg.polarize(&mut self.ck, expr.span);
                 let ret_pos = self
                     .ck
@@ -1004,10 +1035,9 @@ impl Ctx {
                         let mut func = func;
                         let argc = args.len();
                         if argc == 0 {
-                            println!("argc0");
                             func = Term {
                                 ty: {
-                                    let ret = self.ck.add_var(None, level);
+                                    let ret = self.ck.add_var(Some("ret".to_owned()), level);
                                     let (ret_pos, ret_neg) = ret.polarize(&mut self.ck, expr.span);
                                     let func_neg = Neg::Prim(NegPrim::Func(argc, ret_neg));
                                     let func_neg = self.ck.add_ty(func_neg, func_span);
@@ -1018,7 +1048,7 @@ impl Ctx {
                             };
                         }
                         for (i, arg) in args.into_iter().enumerate() {
-                            let ret = self.ck.add_var(None, level);
+                            let ret = self.ck.add_var(Some(format!("ret {i}")), level);
                             let (ret_pos, ret_neg) = ret.polarize(&mut self.ck, expr.span);
                             let func_neg = Neg::Prim(NegPrim::Lambda(arg.ty, ret_neg));
                             let func_neg = self.ck.add_ty(func_neg, func_span);

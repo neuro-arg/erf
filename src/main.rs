@@ -104,7 +104,7 @@ impl ParseCtx {
     }
     pub fn pattern_var(
         &mut self,
-        content: impl Construct<Ident>,
+        content: impl Construct<QualifiedIdent>,
         span: impl Construct<Span>,
     ) -> ast::Pattern {
         ast::Pattern::new1(
@@ -227,17 +227,6 @@ impl Construct<Span> for (usize, usize) {
             left: self.0,
             right: self.1,
         }
-    }
-}
-
-struct Wrapper<T>(T);
-
-impl<A, B, C: Construct<A>, D: Construct<B>> Construct<Vec<(A, B)>> for Wrapper<Vec<(C, D)>> {
-    fn construct(self, ctx: &mut ParseCtx) -> Vec<(A, B)> {
-        self.0
-            .into_iter()
-            .map(|(a, b)| (a.construct(ctx), b.construct(ctx)))
-            .collect()
     }
 }
 

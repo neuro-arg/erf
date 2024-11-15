@@ -41,7 +41,6 @@ impl VarId {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PosPrim {
-    Void,
     Bool,
     Int {
         signed: bool,
@@ -66,7 +65,6 @@ pub type Flow = Option<(PosIdS, NegIdS)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NegPrim {
-    Void,
     Bool,
     Int {
         signed: bool,
@@ -198,7 +196,6 @@ impl TypeCk {
         self.q.enqueue(pos, neg);
         while let Some((pos, neg)) = self.q.queue.pop_front() {
             match (&self.pos[pos.id().id()], &self.neg[neg.id().id()]) {
-                (Pos::Prim(PosPrim::Void), Neg::Prim(NegPrim::Void)) => {}
                 (Pos::Prim(PosPrim::Bool), Neg::Prim(NegPrim::Bool)) => {}
                 (
                     Pos::Prim(PosPrim::Int {
@@ -540,13 +537,30 @@ impl TypeCk {
         for (i, var) in self.vars.iter().enumerate() {
             let pos = id(&format!("+v{}", i));
             let neg = id(&format!("-v{}", i));
-            let label = id(&format!("{:?}", var));
-            ret.push(format!("  {neg} -> {pos}[info={label}]"));
+            let label = id(&format!("{:?}", var.label));
+            ret.push(format!("  {neg} -> {pos}[label={label}]"));
         }
+        let mut added = HashSet::new();
         for (pos, neg) in &self.q.constraints {
             let pos = id(&self.gv_node_id(pos.id()));
             let neg = id(&self.gv_node_id(neg.id()));
             ret.push(format!("  {pos} -> {neg} [color=red]"));
+            added.insert((pos, neg));
+        }
+        for var in self.neg.iter() {
+            if let Neg::Prim(NegPrim::Label { cases, fallthrough }) = var {
+                for (pos, neg) in cases
+                    .values()
+                    .filter_map(|case| case.2)
+                    .chain(fallthrough.and_then(|x| x.1))
+                {
+                    let pos = id(&self.gv_node_id(pos.id()));
+                    let neg = id(&self.gv_node_id(neg.id()));
+                    if added.insert((pos.clone(), neg.clone())) {
+                        ret.push(format!("  {pos} -> {neg} [color=blue]"));
+                    }
+                }
+            }
         }
         ret.push("}".to_owned());
         ret.join("\n")

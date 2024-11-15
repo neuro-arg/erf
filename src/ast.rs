@@ -15,6 +15,11 @@ impl QualifiedIdent {
         &self.0
     }
 }
+impl From<String> for QualifiedIdent {
+    fn from(value: String) -> Self {
+        Self(vec![value])
+    }
+}
 impl IntoIterator for QualifiedIdent {
     type Item = String;
     type IntoIter = std::vec::IntoIter<String>;
@@ -193,7 +198,7 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BasicPatternInner {
-    Variable(Ident),
+    Variable(QualifiedIdent),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -218,9 +223,6 @@ pub struct Pattern {
 #[derive(PartialEq, Eq)]
 pub struct PatConj(pub LinkedList<BasicPattern>);
 impl PatConj {
-    fn first_pat(&self) -> Option<&BasicPattern> {
-        self.0.front()
-    }
     pub fn pop_first_pat(&mut self) -> Option<BasicPattern> {
         self.0.pop_front()
     }
@@ -305,7 +307,11 @@ impl PatternInner {
     fn labels(&self) -> impl Iterator<Item = &str> {
         match self {
             PatternInner::Basic(x) => match x {
-                BasicPatternInner::Variable(x) => IterEither::A([x.as_str()].into_iter()),
+                BasicPatternInner::Variable(x) => IterEither::A(
+                    (x.0.len() == 1)
+                        .then(|| x.0.last().unwrap().as_str())
+                        .into_iter(),
+                ),
             },
             PatternInner::Or(x) | PatternInner::And(x) => IterEither::B(
                 // box it to avoid recursive types which cant be inferred in rust
@@ -383,7 +389,7 @@ mod test {
         Span,
     };
 
-    use super::{BasicPattern, BasicPatternInner, Pattern, PatternInner};
+    use super::{BasicPattern, BasicPatternInner, Pattern, PatternInner, QualifiedIdent};
 
     fn or(pats: impl IntoIterator<Item = Pattern>) -> Pattern {
         Pattern::new(
@@ -399,13 +405,13 @@ mod test {
     }
     fn var(name: impl AsRef<str>) -> Pattern {
         Pattern::new1(
-            BasicPatternInner::Variable(name.as_ref().to_owned()),
+            BasicPatternInner::Variable(QualifiedIdent::from(name.as_ref().to_owned())),
             Span::default(),
         )
     }
     fn bvar(name: impl AsRef<str>) -> BasicPattern {
         BasicPattern {
-            inner: BasicPatternInner::Variable(name.as_ref().to_owned()),
+            inner: BasicPatternInner::Variable(QualifiedIdent::from(name.as_ref().to_owned())),
             span: Span::default(),
         }
     }

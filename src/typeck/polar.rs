@@ -67,8 +67,7 @@ impl PolarPrimitive for PosPrim {
             Self::Func(_, x) => IterEither::B(IterEither::A(IterEither::B(
                 [AnyIdRef::Same(x)].into_iter(),
             ))),
-            Self::Void
-            | Self::Bool
+            Self::Bool
             | Self::Int { .. }
             | Self::Float { .. }
             | Self::IntLiteral { .. }
@@ -87,8 +86,7 @@ impl PolarPrimitive for PosPrim {
             Self::Func(_, x) => IterEither::B(IterEither::A(IterEither::B(
                 [AnyIdMut::Same(x)].into_iter(),
             ))),
-            Self::Void
-            | Self::Bool
+            Self::Bool
             | Self::Int { .. }
             | Self::Float { .. }
             | Self::IntLiteral { .. }
@@ -136,7 +134,7 @@ impl PolarPrimitive for NegPrim {
             Self::Record(_, x) | Self::Func(_, x) => {
                 IterEither::B(IterEither::A([AnyIdRef::Same(x)].into_iter()))
             }
-            Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => {
+            Self::Bool | Self::Int { .. } | Self::Float { .. } => {
                 IterEither::B(IterEither::B([].into_iter()))
             }
         }
@@ -162,7 +160,7 @@ impl PolarPrimitive for NegPrim {
             Self::Record(_, x) | Self::Func(_, x) => {
                 IterEither::B(IterEither::A(Some(AnyIdMut::Same(x)).into_iter()))
             }
-            Self::Void | Self::Bool | Self::Int { .. } | Self::Float { .. } => {
+            Self::Bool | Self::Int { .. } | Self::Float { .. } => {
                 IterEither::B(IterEither::B([].into_iter()))
             }
         }

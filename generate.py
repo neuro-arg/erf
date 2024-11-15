@@ -109,7 +109,7 @@ for ident, data in ops.items():
                 if t1 == ts[0]:
                     print(f'{name}(intrinsic::{t1} x) => intrinsic::{name}_{ts[0]} x;')
                 else:
-                    print(f'{name}(intrinsic::{t1} x) => intrinsic::{name}_{ts[0]}({t1} x);')
+                    print(f'{name}(intrinsic::{t1} x) => intrinsic::{name}_{ts[0]}(intrinsic::{t1} x);')
     else:
         for ts in types:
             t1 = ts[0]
@@ -117,11 +117,11 @@ for ident, data in ops.items():
                 if t1 == t2:
                     print(f'{ident}(intrinsic::{t1} x, intrinsic::{t2} y) => intrinsic::{name}_{t1}(x, y);')
                 else:
-                    print(f'{ident}(intrinsic::{t1} x, intrinsic::{t2} y) => intrinsic::{name}_{t1}(x, {t1} y);')
+                    print(f'{ident}(intrinsic::{t1} x, intrinsic::{t2} y) => intrinsic::{name}_{t1}(x, intrinsic::{t1} y);')
             t2 = ts[1]
             for t1 in allCoercions.get(ts[0], [ts[0]]):
                 if t1 != t2:
-                    print(f'{ident}(intrinsic::{t1} x, intrinsic::{t2} y) => intrinsic::{name}_{t2}({t2} x, y);')
+                    print(f'{ident}(intrinsic::{t1} x, intrinsic::{t2} y) => intrinsic::{name}_{t2}(intrinsic::{t2} x, y);')
 print('''
 (<) (a, b) => let res(intrinsic::Less) => true; res(_) => false; in res(cmp(a, b));
 (>=)(a, b) => let res(intrinsic::Less) => false; res(_) => true; in res(cmp(a, b));

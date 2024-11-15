@@ -213,7 +213,7 @@ LetBindingArm: LetArm = {
 
 BasicPattern: Pattern = {
     "(" Comment* <Pattern> ")" Comment*,
-    <l: @L> <x:Ident> <r: @R> Comment* => ctx.pattern_var(x, (l, r)),
+    <l: @L> <x:QualifiedIdent> <r: @R> Comment* => ctx.pattern_var(x, (l, r)),
 };
 IdentCommentSpan: (QualifiedIdent, (usize, usize)) = {
     <l: @L> <mut y:(<Ident> "::")*> <x:Ident> <r: @R> Comment* => {
