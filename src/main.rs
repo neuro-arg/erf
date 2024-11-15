@@ -62,6 +62,27 @@ impl ParseCtx {
             span.construct(self),
         )
     }
+    pub fn expr_field(
+        &mut self,
+        lhs: impl Construct<Expr>,
+        rhs: impl Construct<Ident>,
+        span: impl Construct<Span>,
+    ) -> Expr {
+        Expr::new(
+            ExprInner::field(lhs.construct(self), rhs.construct(self)),
+            span.construct(self),
+        )
+    }
+    pub fn expr_rec(
+        &mut self,
+        content: impl Construct<Vec<(Ident, Expr)>>,
+        span: impl Construct<Span>,
+    ) -> Expr {
+        Expr::new(
+            ExprInner::rec(content.construct(self)),
+            span.construct(self),
+        )
+    }
     pub fn expr_var(
         &mut self,
         content: impl Construct<QualifiedIdent>,

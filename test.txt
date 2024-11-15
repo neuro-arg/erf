@@ -1,8 +1,8 @@
 # test
 type Test;
 type Test1;
-isOdd(Test a, Test1 b) => 5;
-isOdd(Test1 a, Test b) => 6;
+isOdd(Test a, Test1 b) => { a = 5 };
+isOdd(Test1 a, Test b) => { b = 5 };
 
-main() => isOdd(Test1 5, Test 6);
+main() => isOdd(Test1 5, Test 6).b;
 

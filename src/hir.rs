@@ -44,6 +44,8 @@ pub enum VarType {
 #[derive(Clone, Debug)]
 pub enum TermInner {
     Application(Box<Term>, Option<Box<Term>>),
+    Record(BTreeMap<String, Term>),
+    Field(Box<Term>, String),
     Bind {
         bindings: Box<[(VarId, Term)]>,
         expr: Box<Term>,
@@ -1091,6 +1093,35 @@ impl Ctx {
                     // no adhoc polymorphism means no math, frick you
                     _ => panic!(),
                 }
+            }
+            ast::ExprInner::Record(arms) => {
+                let mut val = BTreeMap::new();
+                let mut ty = BTreeMap::new();
+                for (k, v) in arms.to_vec() {
+                    let (v, _) = self.lower_expr(bindings, [v].into(), level)?;
+                    ty.insert(k.clone(), v.ty);
+                    if let Some(old_v) = val.insert(k, v) {
+                        todo!("proper error (duplicated key {old_v:?})");
+                    }
+                }
+                let ty = self.ck.add_ty(Pos::Prim(PosPrim::Record(ty)), expr.span);
+                Ok(Term {
+                    inner: TermInner::Record(val),
+                    ty,
+                })
+            }
+            ast::ExprInner::Field(expr1, field) => {
+                let (term, _) = self.lower_expr(bindings, [*expr1].into(), level)?;
+                let var = self.ck.add_var(Some(field.clone()), level);
+                let (pos, neg) = var.polarize(&mut self.ck, expr.span);
+                let neg = self
+                    .ck
+                    .add_ty(Neg::Prim(NegPrim::Record(field.clone(), neg)), expr.span);
+                self.ck.flow(term.ty, neg)?;
+                Ok(Term {
+                    ty: pos,
+                    inner: TermInner::Field(Box::new(term), field),
+                })
             }
             ast::ExprInner::UnOp(..) => {
                 assert!(exprs.next().is_none());

@@ -115,8 +115,10 @@ impl Display for BinOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprInner {
+    Field(Box<Expr>, String),
     Literal(LiteralKind, String),
     Variable(QualifiedIdent),
+    Record(Box<[(String, Expr)]>),
     UnOp(UnOp, Box<Expr>),
     BinOp(BinOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
@@ -160,11 +162,17 @@ impl LetArm {
 pub type Tld = LetArm;
 
 impl ExprInner {
+    pub fn field(lhs: Expr, rhs: String) -> Self {
+        Self::Field(Box::new(lhs), rhs)
+    }
     pub fn literal(kind: LiteralKind, s: impl Into<String>) -> Self {
         Self::Literal(kind, s.into())
     }
     pub fn var(s: impl Into<QualifiedIdent>) -> Self {
         Self::Variable(s.into())
+    }
+    pub fn rec(s: impl Into<Box<[(Ident, Expr)]>>) -> Self {
+        Self::Record(s.into())
     }
     pub fn unary(op: UnOp, expr: impl Into<Box<Expr>>) -> Self {
         Self::UnOp(op, expr.into())

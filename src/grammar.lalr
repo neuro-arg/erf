@@ -58,134 +58,141 @@ VarOrLit: Expr = {
     <l: @L> <x:IntLiteral> <r: @R> => ctx.expr_literal(ast::LiteralKind::Int, x, (l, r)),
 };
 
-BasicTerm = {
-    <VarOrLit> Comment*,
-};
-
 Term: Expr = {
-    <BasicTerm>,
-    <l: @L> "(" <x:Operator> ")" <r: @R> => ctx.expr_var(QualifiedIdent(vec![x.to_owned()]), (l, r)),
+    <VarOrLit> Comment*,
+    <l: @L> "(" <x:Operator> ")" <r: @R> Comment* => ctx.expr_var(QualifiedIdent(vec![x.to_owned()]), (l, r)),
+    <l: @L> "{" Comment* <x:Comma<(<Ident> Comment* "=" Comment* <Expr>)>> "}" <r: @R> Comment* => ctx.expr_rec(x, (l, r)),
     "(" Comment* <Expr> ")" Comment*,
-    // call
-    <l: @L> <a:Term> "(" <b:Comma<Expr>> ")" <r: @R> => {
+    <l: @L> <a:Term> "(" <b:Comma<Expr>> ")" <r: @R> Comment* => {
         ctx.call(a, b, (l, r))
     },
+};
+
+// to avoid ambiguity, only allow calling without parens if the argument has no parens either
+TermNoParens: Expr = {
+    <VarOrLit> Comment*,
+    <l: @L> "{" Comment* <x:Comma<(<Ident> Comment* "=" Comment* <Expr>)>> "}" <r: @R> Comment* => ctx.expr_rec(x, (l, r)),
+    <l: @L> <a:TermNoParens> "." Comment* <field:Ident> <r: @R> Comment* => ctx.expr_field(a, field, (l, r)),
 };
 
 Expr: Expr = {
     // 0. basic term
     #[precedence(level="0")]
     <Term>,
-    #[precedence(level="1")] #[assoc(side="left")]
-    <l: @L> <a:Expr> <b:BasicTerm> <r: @R> => {
+    // property
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l: @L> <a:Term> "." Comment* <field:Ident> <r: @R> Comment* => ctx.expr_field(a, field, (l, r)),
+    // call
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l: @L> <a:Expr> <b:TermNoParens> <r: @R> => {
         ctx.call(a, vec![b], (l, r))
     },
     // 2. unary ops
-    #[precedence(level="2")]
+    #[precedence(level="4")]
     <l: @L> "!" Comment* <x:Expr> <r: @R> => {
         ctx.unary(ast::UnOp::Not, x, (l, r))
     },
-    #[precedence(level="2")]
+    #[precedence(level="4")]
     <l: @L> "~" Comment* <x:Expr> <r: @R> => {
         ctx.unary(ast::UnOp::BitNot, x, (l, r))
     },
     // 3. pow
-    #[precedence(level="3")] #[assoc(side="right")]
+    #[precedence(level="5")] #[assoc(side="right")]
     <l: @L> <a:Expr> "**" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Pow, a, b, (l, r))
     },
     // 4. mul/div
-    #[precedence(level="4")] #[assoc(side="left")]
+    #[precedence(level="6")] #[assoc(side="left")]
     <l: @L> <a:Expr> "*" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Mul, a, b, (l, r))
     },
-    #[precedence(level="4")] #[assoc(side="left")]
+    #[precedence(level="6")] #[assoc(side="left")]
     <l: @L> <a:Expr> "/" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Div, a, b, (l, r))
     },
-    #[precedence(level="4")] #[assoc(side="left")]
+    #[precedence(level="6")] #[assoc(side="left")]
     <l: @L> <a:Expr> "//" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::FloorDiv, a, b, (l, r))
     },
-    #[precedence(level="4")] #[assoc(side="left")]
+    #[precedence(level="6")] #[assoc(side="left")]
     <l: @L> <a:Expr> "%" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Rem, a, b, (l, r))
     },
     // 5. add/sub
-    #[precedence(level="5")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l: @L> <a:Expr> "+" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Add, a, b, (l, r))
     },
-    #[precedence(level="5")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l: @L> <a:Expr> "-" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Sub, a, b, (l, r))
     },
     // 6. shl/shr
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="8")] #[assoc(side="left")]
     <l: @L> <a:Expr> "<<" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Shl, a, b, (l, r))
     },
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="8")] #[assoc(side="left")]
     <l: @L> <a:Expr> ">>" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Shr, a, b, (l, r))
     },
     // 7. bit and
-    #[precedence(level="7")] #[assoc(side="left")]
+    #[precedence(level="9")] #[assoc(side="left")]
     <l: @L> <a:Expr> "&" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::BitAnd, a, b, (l, r))
     },
     // 8. bit xor
-    #[precedence(level="8")] #[assoc(side="left")]
+    #[precedence(level="10")] #[assoc(side="left")]
     <l: @L> <a:Expr> "^" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::BitXor, a, b, (l, r))
     },
     // 9. bit or
-    #[precedence(level="9")] #[assoc(side="left")]
+    #[precedence(level="11")] #[assoc(side="left")]
     <l: @L> <a:Expr> "|" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::BitOr, a, b, (l, r))
     },
     // 10. cmp
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> "==" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Eq, a, b, (l, r))
     },
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> "!=" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Ne, a, b, (l, r))
     },
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> "<" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Lt, a, b, (l, r))
     },
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> ">" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Gt, a, b, (l, r))
     },
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> "<=" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Le, a, b, (l, r))
     },
-    #[precedence(level="10")] #[assoc(side="none")]
+    #[precedence(level="12")] #[assoc(side="none")]
     <l: @L> <a:Expr> ">=" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Ge, a, b, (l, r))
     },
     // 11. and
-    #[precedence(level="11")] #[assoc(side="left")]
+    #[precedence(level="13")] #[assoc(side="left")]
     <l: @L> <a:Expr> "&&" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::And, a, b, (l, r))
     },
     // 12. or
-    #[precedence(level="12")] #[assoc(side="left")]
+    #[precedence(level="14")] #[assoc(side="left")]
     <l: @L> <a:Expr> "||" Comment* <b:Expr> <r: @R> => {
         ctx.binary(ast::BinOp::Or, a, b, (l, r))
     },
     // 13. lambda
-    #[precedence(level="13")] #[assoc(side="right")]
+    #[precedence(level="15")] #[assoc(side="right")]
     <l: @L> "fn" Comment* "(" Comment* <a:Comma<Pattern>> ")" Comment* "=>" Comment* <b:Expr> <r: @R> => {
         ctx.lambda(a, b, (l, r))
     },
     // 14. let
-    #[precedence(level="14")] #[assoc(side="right")]
+    #[precedence(level="16")] #[assoc(side="right")]
     <l: @L> "let" Comment* <arms:LetBindingArm+> "in" Comment* <body:Expr> <r: @R> => {
         ctx.letrec(arms, body, (l, r))
     },

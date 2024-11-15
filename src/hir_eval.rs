@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use indexmap::IndexMap;
 
 use crate::{
@@ -14,6 +16,7 @@ pub enum Value {
     Int(malachite_nz::integer::Integer),
     Intrinsic(String),
     Tagged(LabelId, Box<Value>),
+    Record(BTreeMap<String, Value>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +66,13 @@ impl TryFrom<hir::Scope> for Scope {
 pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
     // println!("eval in {:?}", scope.vars.keys().collect::<Vec<_>>());
     match term.inner {
+        hir::TermInner::Record(x) => {
+            let mut ret = BTreeMap::new();
+            for (k, v) in x {
+                ret.insert(k, eval_term(scope, v)?);
+            }
+            Ok(Value::Record(ret))
+        }
         hir::TermInner::CheckTag {
             var,
             mut branches,
@@ -83,7 +93,14 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             }
         }
         hir::TermInner::Fallthrough => Err(Error::NoValue),
-        hir::TermInner::If(..) => todo!(),
+        hir::TermInner::If(a, b, c) => {
+            let a = eval_term(scope, *a)?;
+            match a {
+                Value::Bool(true) => eval_term(scope, *b),
+                Value::Bool(false) => eval_term(scope, *c),
+                _ => panic!("not bool, this shouldn't typecheck"),
+            }
+        }
         hir::TermInner::Sequence(x) => {
             for x in x {
                 match eval_term(scope, x) {
@@ -110,6 +127,13 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             }
             eval_term(scope, *expr)
         }),
+        hir::TermInner::Field(term, field) => {
+            let val = eval_term(scope, *term)?;
+            match val {
+                Value::Record(mut x) => Ok(x.remove(&field).unwrap()),
+                _ => panic!("no field {field} on non-record"),
+            }
+        }
         hir::TermInner::Value(val) => Ok(match val {
             hir::Value::Lambda(x, y) => Value::Lambda(scope.clone(), Some(x), *y),
             hir::Value::FuncEntry(y) => Value::Lambda(scope.clone(), None, *y),
