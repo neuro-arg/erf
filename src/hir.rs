@@ -434,28 +434,6 @@ fn toposort(
     ret
 }
 
-// in order for typechecking to work, we have to split the patterns into a match tree with one
-// check per level. This naturally translates into lambdas. Without lambdas it's kinda annoying.
-// So, translate A { B a, C b } | A { C a, B b } => ... into
-// (x => match x
-//   A => (a => match a
-//     B => (b => match b
-//       C => ...) x.b
-//     C => (b => match b
-//       B => ...) x.b) x.a) x
-// Or translate (A a, B b, C c) => ... into
-// a => match a
-//   A => (a => b => match b
-//     B => (b => c => match c
-//       C => (c => ...) c) b) a
-// translate 0 => ... into
-// a => if a == 0 then
-//   ...
-// this (kinda) ensures the optimal monomorphization is picked each time
-
-// suboptimal implementation because i'm tired
-// compile using classic recursive descent
-
 enum Decision {
     Return(Term),
     Conditional(Term, Vec<Decision>),
