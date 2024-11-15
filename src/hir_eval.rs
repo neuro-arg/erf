@@ -111,7 +111,7 @@ pub fn eval_term(scope: &mut Scope, term: Term) -> Result<Value, Error> {
             eval_term(scope, *expr)
         }),
         hir::TermInner::Value(val) => Ok(match val {
-            hir::Value::Lambda(x, y, _) => Value::Lambda(scope.clone(), Some(x), *y),
+            hir::Value::Lambda(x, y) => Value::Lambda(scope.clone(), Some(x), *y),
             hir::Value::FuncEntry(y) => Value::Lambda(scope.clone(), None, *y),
             hir::Value::Int(x) => Value::Int(x),
             hir::Value::Bool(x) => Value::Bool(x),

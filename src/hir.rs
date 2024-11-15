@@ -26,8 +26,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum Value {
     FuncEntry(Box<Term>),
-    /// arg, body, inline_always
-    Lambda(VarId, Box<Term>, bool),
+    /// arg, body
+    Lambda(VarId, Box<Term>),
     Bool(bool),
     Float(f64),
     Int(malachite_nz::integer::Integer),
@@ -128,7 +128,7 @@ impl Bindings {
                     ty: ret_pos,
                 };
                 let term = Term {
-                    inner: TermInner::Value(Value::Lambda(arg, Box::new(term), true)),
+                    inner: TermInner::Value(Value::Lambda(arg, Box::new(term))),
                     ty: ck.add_ty(
                         Pos::Prim(PosPrim::Lambda(arg_neg, ret_pos)),
                         Span::default(),
@@ -756,7 +756,7 @@ fn compile_patterns(
             .ck
             .add_ty(Pos::Prim(PosPrim::Lambda(neg, term.ty)), arbitrary_bad_span);
         Term {
-            inner: TermInner::Value(Value::Lambda(var, Box::new(term), true)),
+            inner: TermInner::Value(Value::Lambda(var, Box::new(term))),
             ty,
         }
     } else {
@@ -968,7 +968,7 @@ impl Ctx {
                     ty: ret_pos,
                 };
                 let term = Term {
-                    inner: TermInner::Value(Value::Lambda(arg, Box::new(term), true)),
+                    inner: TermInner::Value(Value::Lambda(arg, Box::new(term))),
                     ty: self
                         .ck
                         .add_ty(Pos::Prim(PosPrim::Lambda(arg_neg, ret_pos)), expr.span),
