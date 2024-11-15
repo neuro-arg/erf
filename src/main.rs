@@ -267,24 +267,24 @@ fn main() {
     let ast = ast1;
     let mut ctx = hir::Ctx::default();
     println!("ast -> hir");
-    let write_graph = |ctx: &hir::Ctx| {
+    /*let write_graph = |ctx: &hir::Ctx| {
         // println!("{:?}", scope.map.keys());
         let graph = ctx.ck.graphviz(&text);
         std::fs::write("types.dot", graph).unwrap();
         std::process::Command::new("dot")
             .args(["types.dot", "-Tpng", "-o", "types.png"])
             .spawn()
-    };
+    };*/
     let (mut bindings, scope) = match ctx.lower_ast(ast) {
         Ok(x) => x,
         Err(err) => {
             show_err(&input_file, &text, err);
-            let handle = write_graph(&ctx);
-            let _ = handle.ok().and_then(|mut handle| handle.wait().ok());
+            // let handle = write_graph(&ctx);
+            // let _ = handle.ok().and_then(|mut handle| handle.wait().ok());
             std::process::exit(1);
         }
     };
-    let handle = write_graph(&ctx);
+    // let handle = write_graph(&ctx);
     let (main_term, _meta) = match bindings
         .get(&["main"], Span::default(), &mut ctx.ck, 0)
         .transpose()
@@ -338,5 +338,5 @@ fn main() {
         )
         .unwrap()
     );
-    let _ = handle.ok().and_then(|mut handle| handle.wait().ok());
+    // let _ = handle.ok().and_then(|mut handle| handle.wait().ok());
 }

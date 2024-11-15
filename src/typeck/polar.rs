@@ -8,13 +8,14 @@ use crate::{
     Span,
 };
 
-use super::{NegPrim, PolarType, PosPrim, Relevel, TypeCk, VarId, VarState};
+use super::{Flow, NegPrim, PolarType, PosPrim, Relevel, TypeCk, VarId, VarState};
 
 #[derive(Copy, Clone, Debug)]
 pub enum AnyIdRef<'a, T: PolarPrimitive> {
     Same(&'a IdSpan<T>),
     Inverse(&'a IdSpan<T::Inverse>),
     Var(&'a VarId),
+    Flow(&'a Flow),
 }
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub enum AnyIdMut<'a, T: PolarPrimitive> {
     Same(&'a mut IdSpan<T>),
     Inverse(&'a mut IdSpan<T::Inverse>),
     Var(&'a mut VarId),
+    Flow(&'a mut Flow),
 }
 
 pub trait PolarPrimitive: Clone + Eq + Hash {
@@ -121,11 +123,9 @@ impl PolarPrimitive for NegPrim {
                     .map(|(case, _refutable, flow)| (case, flow))
                     .chain(fallthrough.iter().map(|(case, flow)| (case, flow)))
                     .flat_map(|(case, flow)| {
-                        [AnyIdRef::Same(case)].into_iter().chain(
-                            flow.iter().flat_map(|flow| {
-                                [AnyIdRef::Inverse(&flow.0), AnyIdRef::Same(&flow.1)]
-                            }),
-                        )
+                        [AnyIdRef::Same(case)]
+                            .into_iter()
+                            .chain([AnyIdRef::Flow(flow)])
                     }),
             )),
             Self::Lambda(a, b) => IterEither::A(IterEither::B(
@@ -149,9 +149,7 @@ impl PolarPrimitive for NegPrim {
                     .flat_map(|(case, flow)| {
                         [AnyIdMut::Same(case)]
                             .into_iter()
-                            .chain(flow.iter_mut().flat_map(|flow| {
-                                [AnyIdMut::Inverse(&mut flow.0), AnyIdMut::Same(&mut flow.1)]
-                            }))
+                            .chain([AnyIdMut::Flow(flow)])
                     }),
             )),
             Self::Lambda(a, b) => IterEither::A(IterEither::B(

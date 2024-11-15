@@ -767,7 +767,7 @@ fn compile_patterns(
                 (
                     ctx.ck.add_ty(Neg::Var(var_case), arbitrary_bad_span),
                     fallible,
-                    Some((term.ty, ret_neg)),
+                    Some((term.ty, ret_neg, vec![])),
                 ),
             );
             branches.insert(label, term);
@@ -779,7 +779,7 @@ fn compile_patterns(
                 let (_, ret_fall_pos, _) = ret_fall(ctx);
                 (
                     ctx.ck.add_ty(Neg::Var(fall), arbitrary_bad_span),
-                    Some((ret_fall_pos, ret_neg)),
+                    Some((ret_fall_pos, ret_neg, vec![])),
                 )
             }),
         });

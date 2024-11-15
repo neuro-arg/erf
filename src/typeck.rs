@@ -61,7 +61,8 @@ pub enum PosPrim {
     Func(usize, IdSpan<Self>),
 }
 
-pub type Flow = Option<(PosIdS, NegIdS)>;
+/// A flow that directly connects two types, potentially with relevels
+pub type Flow = Option<(PosIdS, NegIdS, Vec<RelevelId>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NegPrim {
@@ -186,6 +187,10 @@ impl TypeCk {
                 AnyIdRef::Same(x) => self.level(self.ty(x.id())),
                 AnyIdRef::Inverse(x) => self.level(self.ty(x.id())),
                 AnyIdRef::Var(x) => self.vars[x.0].level,
+                AnyIdRef::Flow(Some((a, b, c))) if c.is_empty() => {
+                    self.level(self.ty(a.id())).max(self.level(self.ty(b.id())))
+                }
+                AnyIdRef::Flow(_) => 0,
             })
             .max()
             .unwrap_or(0)
@@ -303,17 +308,25 @@ impl TypeCk {
                     Pos::Prim(PosPrim::Label(label1, _)),
                     Neg::Prim(NegPrim::Label { cases, fallthrough }),
                 ) => {
-                    let cases1 = if let Some((ty2, refutable, flow)) = cases.get(label1) {
-                        Some((*ty2, *flow))
-                            .into_iter()
-                            .chain(refutable.then(|| *fallthrough).flatten())
+                    let label1 = *label1;
+                    let cases1 = if let Some((ty2, refutable, flow)) = cases.get(&label1) {
+                        Some((*ty2, flow.clone())).into_iter().chain(
+                            refutable
+                                .then(|| fallthrough.as_ref().map(|(ty, flow)| (*ty, flow.clone())))
+                                .flatten(),
+                        )
                     } else {
-                        None.into_iter().chain(*fallthrough)
+                        None.into_iter()
+                            .chain(fallthrough.as_ref().map(|(ty, flow)| (*ty, flow.clone())))
                     };
                     let mut handled = false;
                     for (case, flow) in cases1 {
                         self.q.enqueue(pos, case);
-                        if let Some((flow_pos, flow_neg)) = flow {
+                        if let Some((mut flow_pos, mut flow_neg, relevels)) = flow {
+                            for relevel in relevels {
+                                flow_pos = self.relevel(flow_pos, relevel);
+                                flow_neg = self.relevel(flow_neg, relevel);
+                            }
                             self.q.enqueue(flow_pos, flow_neg);
                         }
                         handled = true;
@@ -324,7 +337,7 @@ impl TypeCk {
                             HumanType::from_neg(self, neg.id()),
                         )
                         .with_hint(diag::TypeHint::UnhandledCase {
-                            case: self.label(*label1).to_owned(),
+                            case: self.label(label1).to_owned(),
                             created: pos.span(),
                         }));
                     }
@@ -376,8 +389,12 @@ impl TypeCk {
                     }),
                 ) => {
                     self.q.enqueue(pos, *fallthrough);
-                    if let Some((flow_pos, flow_neg)) = flow {
-                        self.q.enqueue(*flow_pos, *flow_neg);
+                    if let Some((mut flow_pos, mut flow_neg, relevels)) = flow.clone() {
+                        for relevel in relevels {
+                            flow_pos = self.relevel(flow_pos, relevel);
+                            flow_neg = self.relevel(flow_neg, relevel);
+                        }
+                        self.q.enqueue(flow_pos, flow_neg);
                     }
                 }
                 (pos1, neg1) => {
@@ -450,6 +467,14 @@ impl TypeCk {
                 }
                 AnyIdMut::Inverse(x) => {
                     *x = self.relevel(*x, relevel_id);
+                }
+                AnyIdMut::Flow(x) => {
+                    match x {
+                        None => {}
+                        Some((_, _, c)) => {
+                            c.push(relevel_id);
+                        }
+                    };
                 }
                 AnyIdMut::Var(var) => {
                     let var1 = *var;
@@ -538,7 +563,7 @@ impl TypeCk {
             let pos = id(&format!("+v{}", i));
             let neg = id(&format!("-v{}", i));
             let label = id(&format!("{:?}", var.label));
-            ret.push(format!("  {neg} -> {pos}[label={label}]"));
+            ret.push(format!("  {neg} -> {pos} [label={label}]"));
         }
         let mut added = HashSet::new();
         for (pos, neg) in &self.q.constraints {
@@ -549,15 +574,17 @@ impl TypeCk {
         }
         for var in self.neg.iter() {
             if let Neg::Prim(NegPrim::Label { cases, fallthrough }) = var {
-                for (pos, neg) in cases
+                for (pos, neg, relevels) in cases
                     .values()
-                    .filter_map(|case| case.2)
-                    .chain(fallthrough.and_then(|x| x.1))
+                    .filter_map(|case| case.2.as_ref())
+                    .chain(fallthrough.as_ref().and_then(|x| x.1.as_ref()))
                 {
-                    let pos = id(&self.gv_node_id(pos.id()));
-                    let neg = id(&self.gv_node_id(neg.id()));
-                    if added.insert((pos.clone(), neg.clone())) {
-                        ret.push(format!("  {pos} -> {neg} [color=blue]"));
+                    if relevels.is_empty() {
+                        let pos = id(&self.gv_node_id(pos.id()));
+                        let neg = id(&self.gv_node_id(neg.id()));
+                        if added.insert((pos.clone(), neg.clone())) {
+                            ret.push(format!("  {pos} -> {neg} [color=blue]"));
+                        }
                     }
                 }
             }
